@@ -2688,60 +2688,6 @@
 	width: 100%;
 }
 
-/* Novel knowledge: one quiet status line under the title row, shown only while something is happening. */
-.wb-memory-status {
-	display: flex;
-	align-items: center;
-	gap: var(--size-4-2);
-	padding: var(--size-2-2) var(--size-4-3);
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-}
-.wb-memory-status.is-partial {
-	color: var(--text-warning);
-}
-.wb-memory-status-label {
-	min-width: 0;
-	overflow-wrap: anywhere;
-}
-/* The line's one action: Retry, Pause or Resume, never more than one at a time. */
-.wb-memory-action {
-	flex: none;
-	font-size: var(--font-ui-smaller);
-	padding: 0 var(--size-4-2);
-	height: auto;
-	line-height: 1.6;
-}
-
-/* A name with a badge and an info icon after it: one centred row, so nothing sits below the text's midline. */
-.wb-novel-memory-row .setting-item-name {
-	display: flex;
-	align-items: center;
-	flex-wrap: wrap;
-	gap: var(--size-4-2);
-}
-
-/* An info icon next to a name: what the feature gives and what it costs, on hover. */
-.wb-info-icon {
-	display: inline-flex;
-	align-items: center;
-	color: var(--text-faint);
-}
-.wb-info-icon .svg-icon { width: 1em; height: 1em; }
-.wb-info-icon:hover { color: var(--text-muted); }
-
-/* An experimental feature says so next to its name, in the same quiet voice as a status. */
-.wb-experimental-badge {
-	display: inline-block;
-	padding: 0 var(--size-4-1);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
-	font-size: var(--font-ui-smaller);
-	font-weight: var(--font-normal);
-	line-height: 1.5;
-	color: var(--text-muted);
-}
-
 /* ------------------------------------------------------------ data folder */
 
 /* The row's control sits on the row's centre line, whatever Obsidian's own default is for a three-line item. */
@@ -2769,3 +2715,13 @@
 .wb-location-suggestion-icon .svg-icon { width: 1em; height: 1em; color: var(--text-muted); }
 .wb-location-suggestion-detail { font-size: var(--font-ui-smaller); color: var(--text-faint); padding-left: calc(1em + var(--size-4-2)); }
 .notice .wb-notice-clickable { cursor: pointer; }
+
+/* A rewrite that came back without a candidate: said so under the reply, with a way to ask again. */
+.wb-msg-no-candidate {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+	font-size: var(--font-ui-small);
+	color: var(--text-warning);
+}

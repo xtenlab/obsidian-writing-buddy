@@ -41,8 +41,7 @@ export type EvidenceKind =
 	| "related"
 	| "character"
 	| "world"
-	| "outline"
-	| "memory";
+	| "outline";
 
 export const EVIDENCE_KIND_LABELS: Record<EvidenceKind, string> = {
 	selection: "所选正文",
@@ -51,7 +50,6 @@ export const EVIDENCE_KIND_LABELS: Record<EvidenceKind, string> = {
 	character: "人物设定",
 	world: "世界设定",
 	outline: "大纲",
-	memory: "项目记忆",
 };
 
 const EVIDENCE_KIND_LABELS_EN: Record<EvidenceKind, string> = {
@@ -61,7 +59,6 @@ const EVIDENCE_KIND_LABELS_EN: Record<EvidenceKind, string> = {
 	character: "Character sheet",
 	world: "World sheet",
 	outline: "Outline",
-	memory: "Project memory",
 };
 
 /** The heading given to the text around a selection; a label prefix like the kinds above. */
@@ -342,7 +339,7 @@ function pathQualifiedLabel(item: EvidenceLabelSource, pathSuffix: string): stri
 
 /** The chip's text: chapter and section for prose, kind and subject for canon. */
 export function labelFor(kind: EvidenceKind, name: string, heading: string | null): string {
-	if (kind === "character" || kind === "world" || kind === "outline" || kind === "memory") {
+	if (kind === "character" || kind === "world" || kind === "outline") {
 		return `${evidenceKindLabel(kind)} · ${heading ?? name}`;
 	}
 	return heading ? `${name} · ${heading}` : name;
@@ -357,7 +354,6 @@ export function labelFor(kind: EvidenceKind, name: string, heading: string | nul
  */
 export function kindOf(document: ContextDocument): EvidenceKind {
 	if (document.role === "active-file") return "current";
-	if (document.role === "memory") return "memory";
 
 	const path = document.path;
 	if (/人物|角色|character/i.test(path)) return "character";
@@ -391,12 +387,16 @@ export function splitSections(text: string): Section[] {
 	const flush = (): void => {
 		const joined = body.join("\n");
 		if (joined.trim().length === 0 && heading === null) return;
-		if (sections.length >= MAX_SECTIONS_PER_DOCUMENT) return;
-		sections.push({
-			heading,
-			text: headingLine ? `${headingLine}\n${joined}` : joined,
-			anchorText: headingLine ?? firstLine(joined),
-		});
+		const text = headingLine ? `${headingLine}\n${joined}` : joined;
+		// Past the section limit the rest joins the last section rather than
+		// being dropped: a chapter of ten scenes, or a cast sheet with a heading
+		// per character, was read as its first six and the rest silently lost.
+		if (sections.length >= MAX_SECTIONS_PER_DOCUMENT) {
+			const last = sections[sections.length - 1];
+			last.text = `${last.text}\n${text}`;
+			return;
+		}
+		sections.push({ heading, text, anchorText: headingLine ?? firstLine(joined) });
 	};
 
 	for (const line of lines) {

@@ -1,10 +1,5 @@
 {
 	"compilerOptions": {
-		"baseUrl": ".",
-		"paths": {
-			"recanta-dev": ["./vendor/recanta/dist/src/index.d.ts"],
-			"recanta-dev/sqljs": ["./vendor/recanta/dist/src/drivers/sqljs.d.ts"]
-		},
 		"module": "ESNext",
 		"target": "ES2022",
 		"moduleResolution": "bundler",

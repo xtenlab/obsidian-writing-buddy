@@ -54,7 +54,6 @@ export const PROJECT_STRUCTURE = [
 	"project.json",
 	"conversations",
 	"edits",
-	"memory",
 	"instructions",
 	"skills",
 ] as const;
@@ -78,9 +77,6 @@ export const projectPaths = {
 	},
 	get editsDir(): string {
 		return `${currentRoot}/edits`;
-	},
-	get memoryDir(): string {
-		return `${currentRoot}/memory`;
 	},
 	/** Parent for optional writer-owned project instructions. No file is seeded. */
 	get instructionsDir(): string {
@@ -135,7 +131,6 @@ export const projectPaths = {
 			currentRoot,
 			this.conversationsDir,
 			this.editsDir,
-			this.memoryDir,
 			this.instructionsDir,
 			this.skillsDir,
 			this.customSkillsDir,

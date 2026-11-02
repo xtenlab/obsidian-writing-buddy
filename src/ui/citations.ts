@@ -310,11 +310,16 @@ export function stripCitationMarkers(text: string, citations: Map<string, Contex
  */
 export function persistCitationMarkers(text: string, citations: Map<string, ContextCitation>): string {
 	MARKER.lastIndex = 0;
-	return text.replace(MARKER, (_marker, group: string) => {
-		const labels = splitReferences(group, citations)
+	return text.replace(MARKER, (whole: string, group: string) => {
+		const references = splitReferences(group, citations);
+		const labels = references
 			.map((reference) => lookup(citations, reference)?.label)
 			.filter((label): label is string => label !== undefined);
-		return labels.length > 0 ? labels.map((label) => `[${label}]`).join("") : "";
+		if (labels.length > 0) return labels.map((label) => `[${label}]`).join("");
+		// An id this request never issued is our bookkeeping gone stale and is
+		// dropped. Anything else in brackets is the model's text — 【回忆】, [注1],
+		// a line of dialogue in a candidate — and is kept exactly as written.
+		return references.length > 0 && references.every(looksLikeId) ? "" : whole;
 	});
 }
 

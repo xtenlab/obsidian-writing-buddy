@@ -41,11 +41,6 @@ export function setInactiveProjectRoots(roots: readonly string[]): void {
 	inactiveProjectRoots = roots.map(normaliseVaultPath).filter((root) => root.length > 0);
 }
 
-/** Machine-managed novel knowledge: never manuscript, never canon, never retrieved as context. */
-function managedKnowledgePrefix(): string {
-	return `${projectPaths.memoryDir}/novel/`;
-}
-
 /**
  * Obsidian's own configuration folder, which the user can rename. The plugin
  * reports it from `Vault#configDir` at load; until then only plugin-owned
@@ -57,7 +52,7 @@ export function setVaultConfigDir(dir: string | null): void {
 	vaultConfigDir = dir ? normaliseVaultPath(dir) : null;
 }
 
-/** True for plugin-owned state and Obsidian's own configuration. Bounded retrieval admits only curated memory. */
+/** True for plugin-owned state and Obsidian's own configuration. Neither is ever context. */
 export function isInternalContextPath(path: string): boolean {
 	const normalised = normaliseVaultPath(path);
 	const roots: string[] = [projectPaths.root, ...FIXED_INTERNAL_ROOTS, ...inactiveProjectRoots];
@@ -104,13 +99,9 @@ export function isEligibleContextPath(path: string, options: ContextEligibilityO
 	const normalised = normaliseVaultPath(path);
 	if (!isSafeVaultRelativePath(normalised) || !/\.md$/iu.test(normalised)) return false;
 
+	if (isInternalContextPath(normalised)) return false;
 	const scope = options.scope ?? (options.root !== undefined ? "full-current-manuscript" : "bounded");
-	if (scope === "full-current-manuscript") {
-		if (isInternalContextPath(normalised)) return false;
-		if (options.root !== undefined && !isWithinContextRoot(normalised, normaliseVaultPath(options.root))) return false;
-	} else if (isInternalContextPath(normalised) && (!normalised.startsWith(`${projectPaths.memoryDir}/`) || normalised.startsWith(managedKnowledgePrefix()))) {
-		return false;
-	}
+	if (scope === "full-current-manuscript" && options.root !== undefined && !isWithinContextRoot(normalised, normaliseVaultPath(options.root))) return false;
 
 	return options.includeArchives === true || !isExplicitArchivePath(normalised);
 }

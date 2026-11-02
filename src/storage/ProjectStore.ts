@@ -366,7 +366,6 @@ export class ProjectStore {
 		for (const [legacySub, target] of [
 			["conversations", projectPaths.conversationsDir],
 			["edits", projectPaths.editsDir],
-			["memory", projectPaths.memoryDir],
 			["skills", projectPaths.skillsDir],
 		] as const) {
 			await stageTree(`${source}/${legacySub}`, target);
@@ -415,7 +414,7 @@ export class ProjectStore {
 		for (const path of [projectPaths.projectFile, projectPaths.editHistoryFile, projectPaths.skillMigrationFile, projectPaths.skillResetStateFile]) {
 			if (await this.fs.exists(path)) return true;
 		}
-		for (const directory of [projectPaths.conversationsDir, projectPaths.memoryDir, projectPaths.instructionsDir, projectPaths.skillsDir]) {
+		for (const directory of [projectPaths.conversationsDir, projectPaths.instructionsDir, projectPaths.skillsDir]) {
 			if (await this.treeContainsAnyFile(directory)) return true;
 		}
 		return false;
@@ -500,7 +499,7 @@ export class ProjectStore {
 		const legacy = typeof decoded.projectId === "string" ? decoded.projectId : null;
 		if (legacy !== null) {
 			// Rewrite without the obsolete field. Nothing else in the vault is
-			// touched: conversations, edits, skills and memory are separate files.
+			// touched: conversations, edits and skills are separate files.
 			await this.saveProjectMetadata(metadata);
 		}
 

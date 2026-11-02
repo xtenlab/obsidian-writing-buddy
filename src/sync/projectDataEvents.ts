@@ -5,8 +5,7 @@ import { isSafeSessionId } from "../util/id";
 
 export type ProjectDataPath =
 	| { kind: "conversation"; sessionId: string }
-	| { kind: "skill" }
-	| { kind: "memory" };
+	| { kind: "skill" };
 
 /**
  * Classify only the project data WritingBuddy owns and may refresh live.
@@ -39,6 +38,5 @@ export function projectDataPath(path: string): ProjectDataPath | null {
 	}
 	if (normalized === projectPaths.skillMigrationFile || normalized === projectPaths.skillResetStateFile) return { kind: "skill" };
 	if (normalized.startsWith(`${projectPaths.skillsDir}/`) && normalized.endsWith(".md")) return { kind: "skill" };
-	if (normalized.startsWith(`${projectPaths.memoryDir}/`) && normalized.endsWith(".md")) return { kind: "memory" };
 	return null;
 }

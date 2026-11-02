@@ -62,8 +62,8 @@ export function renderDocumentsBlock(documents: ContextDocumentPayload[]): strin
 	return [
 		en ? "## Project material (provided by Writing Buddy from the local Vault)" : "## 项目资料（由 WritingBuddy 从本地 Vault 提供）",
 		en
-			? "The material below is attached to this request. Use it directly; there is no need, and no way, to read files separately. When citing, use the Vault-relative paths given below."
-			: "以下内容已随本次请求附上，请直接使用，不需要也无法另行读取文件。引用时请使用下面给出的 Vault 相对路径。",
+			? "The material below is attached to this request. Use it directly; there is no need, and no way, to read files separately. When citing, use the marker in brackets at the start of an item's heading, such as [S1]; only an item without one is cited by its Vault-relative path."
+			: "以下内容已随本次请求附上，请直接使用，不需要也无法另行读取文件。引用时用每项标题开头方括号里的编号，例如 [S1]；只有没有编号的条目才写它的 Vault 相对路径。",
 		...usable.map((document) => `### \`${document.path}\`\n\n${document.text}`),
 	].join("\n\n");
 }

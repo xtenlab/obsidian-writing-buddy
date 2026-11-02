@@ -15,11 +15,14 @@ import { fetchHttpClient, type HttpClient } from "./HttpClient";
 import { MAX_REPLY_CHARS, ReplyTooLargeError, StreamInterruptedError, StreamUnavailableError, isEventStream, sseData, type StreamClient } from "./streaming";
 import { redactCredential } from "../auth/redact";
 import {
+	ANTHROPIC_ANSWER_TOKENS,
+	OPENAI_EFFORTS,
 	advertisedEffortLadder,
 	anthropicThinking,
+	claudeAdvertisedEfforts,
+	claudeEfforts,
 	fullEffortLadder,
 	googleThinkingConfig,
-	isAnthropicThinkingFamily,
 	isGoogleThinkingFamily,
 	isOpenAIReasoningFamily,
 } from "./effort";
@@ -182,6 +185,14 @@ export class DirectAPIBackend implements AIBackend {
 				yield { type: "error", code: "output_budget_exhausted", message: t("backend.outputBudget") };
 				return;
 			}
+			// A reply the provider stopped for any reason but finishing is not an
+			// answer, however much text came first: a rewrite cut there must never
+			// become an Apply candidate (PC-022, PC-024).
+			const withheld = withheldReply(result.finishReason);
+			if (withheld) {
+				yield { type: "error", code: withheld === "truncated" ? "reply_incomplete" : "reply_withheld", message: t(withheld === "truncated" ? "backend.replyIncomplete" : "backend.replyWithheld", { reason: result.finishReason ?? "" }) };
+				return;
+			}
 			if (!result.text.trim()) {
 				yield { type: "error", code: "direct_api_empty_response", message: t("backend.directEmpty") };
 				return;
@@ -234,13 +245,25 @@ export class DirectAPIBackend implements AIBackend {
 		if (preset.modelDiscovery === "preset" && preset.models?.length) return preset.models.map((id) => ({ id }));
 		const provider = this.connection.config.provider;
 		const base = baseUrl(this.connection);
-		const request = modelRequest(provider, base, this.connection.config.apiKey);
-		const response = await this.httpClient({ url: request.url, headers: request.headers });
-		if (!response.ok) throw await httpError(response, this.connection.config.apiKey);
-		const raw = object(response.json);
-		const list = provider === "google" ? raw.models : raw.data;
-		if (!Array.isArray(list)) return [];
-		const discovered = list.flatMap((item) => parseListedModel(provider, item));
+		// Google and Anthropic list in pages (50 and 20 by default); a model past
+		// the first page was simply missing. Twenty pages is far past either catalogue.
+		const listed: unknown[] = [];
+		let cursor: string | undefined;
+		for (let page = 0; page < 20; page += 1) {
+			const request = modelRequest(provider, base, this.connection.config.apiKey, cursor);
+			const response = await this.httpClient({ url: request.url, headers: request.headers });
+			if (!response.ok) throw await httpError(response, this.connection.config.apiKey);
+			const raw = object(response.json);
+			const list = provider === "google" ? raw.models : raw.data;
+			if (!Array.isArray(list)) break;
+			listed.push(...(list as unknown[]));
+			const next = provider === "google" ? string(raw.nextPageToken)
+				: provider === "anthropic" && raw.has_more === true ? string(raw.last_id)
+				: undefined;
+			if (!next || next === cursor) break;
+			cursor = next;
+		}
+		const discovered = listed.filter((item) => isChatModel(provider, item)).flatMap((item) => parseListedModel(provider, item));
 		return pinned.length > 0 ? pinned : discovered;
 	}
 
@@ -286,31 +309,52 @@ export class DirectAPIBackend implements AIBackend {
 		const key = this.connection.config.apiKey;
 		const request = streamingRequest(provider, completionRequest(provider, baseUrl(this.connection), key, model, messages, instructions, effort, maxOutputTokens));
 		const response = await streamClient({ url: request.url, method: "POST", signal, headers: request.headers, body: JSON.stringify(request.body) });
-		if (!response.ok) throw await httpError({ status: response.status, text: await response.text(), headers: response.headers }, key);
+		if (!response.ok) {
+			const body = await response.text();
+			// OpenAI streams some models only for verified organisations; the
+			// same request without streaming is answered, so it is not an error
+			// the writer should see.
+			if (response.status === 400 && /organi[sz]ation must be verified/i.test(body) && /stream/i.test(body)) throw new StreamUnavailableError("streaming needs a verified organisation");
+			throw await httpError({ status: response.status, text: body, headers: response.headers }, key);
+		}
 		if (!isEventStream(response.headers)) {
+			// A server that ignored `stream: true` sent one whole reply; it is bounded like one.
+			const whole = await response.text();
+			if (whole.length > MAX_REPLY_CHARS) throw new ReplyTooLargeError();
 			let json: unknown = null;
-			try { json = JSON.parse(await response.text()); } catch { /* an empty reply is reported below */ }
+			try { json = JSON.parse(whole); } catch { /* an empty reply is reported below */ }
 			return parseCompletion(provider, object(json));
 		}
 		if (!response.body) throw new StreamUnavailableError("the response carried no readable body");
 		let text = "";
 		let finishReason: string | undefined;
 		let usage: UsageInfo | undefined;
+		// Every provider says when a reply is over: `[DONE]`, a finish reason, or
+		// Anthropic's `message_stop`. A connection that closes cleanly without
+		// one — a proxy dropping its upstream, say — has cut the reply short, and
+		// the text so far must not be offered as the answer (PC-022).
+		let finished = false;
 		for await (const data of sseData(response.body)) {
-			if (data === "[DONE]") break;
+			if (data === "[DONE]") { finished = true; break; }
+			if (data.trim() === "") continue;
 			let raw: unknown;
-			try { raw = JSON.parse(data); } catch { continue; }
+			// Every provider frames its events as JSON; one that does not parse was
+			// damaged on the way, and the text it carried would be silently missing.
+			try { raw = JSON.parse(data); } catch { throw new StreamInterruptedError("a stream event was not JSON"); }
 			const chunk = streamChunk(provider, object(raw));
-			// Server-authored text, bounded like an HTTP error body; the catch redacts the credential.
-			if (chunk.error) throw new Error(chunk.error.slice(0, 200));
+			// Server-authored text, bounded like an HTTP error body. Redacted before
+			// it is cut, so a key that straddles the cut cannot leave half of itself.
+			if (chunk.error) throw new Error(redactCredential(chunk.error, key).slice(0, 200));
 			if (chunk.text) {
 				text += chunk.text;
 				if (text.length > MAX_REPLY_CHARS) throw new ReplyTooLargeError();
 				yield chunk.text;
 			}
-			if (chunk.finishReason) finishReason = chunk.finishReason;
+			if (chunk.finishReason) { finishReason = chunk.finishReason; finished = true; }
+			if (chunk.stopped) finished = true;
 			if (chunk.usage) usage = { ...usage, ...chunk.usage };
 		}
+		if (!finished) throw new StreamInterruptedError("the stream ended before the reply finished");
 		return completion(text, finishReason, usage);
 	}
 }
@@ -330,7 +374,7 @@ function streamingRequest(
 	return { ...request, body: { ...body, stream: true, ...(provider === "openai" ? { stream_options: { include_usage: true } } : {}) } };
 }
 
-interface StreamChunk { text?: string; finishReason?: string; usage?: UsageInfo; error?: string }
+interface StreamChunk { text?: string; finishReason?: string; usage?: UsageInfo; error?: string; stopped?: boolean }
 
 /** One streamed event, read in the provider's own shape. */
 function streamChunk(provider: DirectAPIProvider, raw: Record<string, unknown>): StreamChunk {
@@ -342,17 +386,19 @@ function streamChunk(provider: DirectAPIProvider, raw: Record<string, unknown>):
 		}
 		if (type === "message_start") return { usage: parseUsage(object(raw.message).usage, "input_tokens", "output_tokens") };
 		if (type === "message_delta") return { finishReason: string(object(raw.delta).stop_reason), usage: parseUsage(raw.usage, "input_tokens", "output_tokens") };
+		if (type === "message_stop") return { stopped: true };
 		if (type === "error") return { error: string(object(raw.error).message) ?? "stream error" };
 		return {};
 	}
 	if (provider === "google") {
+		if (raw.error !== undefined) return { error: string(object(raw.error).message) ?? "stream error" };
 		const candidates = Array.isArray(raw.candidates) ? raw.candidates : [];
 		const first = object(candidates[0]);
 		const parts = Array.isArray(object(first.content).parts) ? (object(first.content).parts as unknown[]) : [];
 		return {
 			text: parts.flatMap(googleTextParts).join(""),
-			finishReason: string(first.finishReason),
-			usage: parseUsage(raw.usageMetadata, "promptTokenCount", "candidatesTokenCount", "totalTokenCount"),
+			finishReason: string(first.finishReason) ?? googlePromptBlock(raw),
+			usage: googleUsage(raw.usageMetadata),
 		};
 	}
 	// An OpenAI-style server that fails mid-stream sends `{"error": {...}}` in
@@ -382,10 +428,30 @@ function baseUrl(connection: DirectAPIConnection): string {
 	}
 }
 
-function modelRequest(provider: DirectAPIProvider, base: string, key: string): { url: string; headers: Record<string, string> } {
-	if (provider === "google") return { url: base + "/models", headers: { "x-goog-api-key": key } };
-	if (provider === "anthropic") return { url: base + "/models", headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } };
+function modelRequest(provider: DirectAPIProvider, base: string, key: string, cursor?: string): { url: string; headers: Record<string, string> } {
+	if (provider === "google") return { url: base + "/models?pageSize=1000" + (cursor ? "&pageToken=" + encodeURIComponent(cursor) : ""), headers: { "x-goog-api-key": key } };
+	if (provider === "anthropic") return { url: base + "/models?limit=100" + (cursor ? "&after_id=" + encodeURIComponent(cursor) : ""), headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } };
 	return { url: base + "/models", headers: bearer(key) };
+}
+
+/**
+ * Whether a listed model can hold a conversation. Google says so itself
+ * (`supportedGenerationMethods`); OpenAI's own list mixes in embedding,
+ * speech, image and moderation models, and models served only by the
+ * Responses API, none of which answers `/chat/completions`. A compatible
+ * endpoint's list is the operator's and is taken as it is.
+ */
+function isChatModel(provider: DirectAPIProvider, item: unknown): boolean {
+	const record = object(item);
+	if (provider === "google") {
+		const methods = record.supportedGenerationMethods;
+		return !Array.isArray(methods) || methods.includes("generateContent");
+	}
+	if (provider === "openai") {
+		const id = typeof item === "string" ? item : string(record.id) ?? "";
+		return !/(embedding|tts|whisper|transcribe|dall-e|gpt-image|image|moderation|realtime|audio|sora|codex|computer-use|davinci|babbage|-pro(?:-|$))/i.test(id);
+	}
+	return true;
 }
 
 /** An unauthenticated OpenAI-compatible server gets no Authorization header rather than an empty one. */
@@ -404,12 +470,13 @@ function completionRequest(
 	maxOutputTokens?: number,
 ): { url: string; headers: Record<string, string>; body: unknown } {
 	if (provider === "anthropic") {
-		// Effort is a thinking budget here, and `max_tokens` must leave room for
-		// the answer above it. Thinking blocks in the reply are not text and are
+		// Effort is adaptive thinking at that effort on current Claude models and
+		// a token budget on older ones; `max_tokens` leaves room for the answer
+		// above the thinking. Thinking blocks in the reply are not text and are
 		// dropped by the parsers; only the answer reaches the writer. A caller's
 		// output budget takes the answer's share, above the same thinking.
-		const thinking = anthropicThinking(effort);
-		const budgeted = maxOutputTokens ? { ...thinking, max_tokens: ("thinking" in thinking ? thinking.thinking.budget_tokens : 0) + maxOutputTokens } : thinking;
+		const thinking = anthropicThinking(model, effort);
+		const budgeted = maxOutputTokens ? { ...thinking, max_tokens: thinking.max_tokens - ANTHROPIC_ANSWER_TOKENS + maxOutputTokens } : thinking;
 		return {
 			url: base + "/messages",
 			headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
@@ -461,8 +528,8 @@ function parseCompletion(provider: DirectAPIProvider, raw: Record<string, unknow
 		const parts = Array.isArray(content.parts) ? content.parts : [];
 		return completion(
 			parts.flatMap(googleTextParts).join(""),
-			string(first.finishReason),
-			parseUsage(raw.usageMetadata, "promptTokenCount", "candidatesTokenCount", "totalTokenCount"),
+			string(first.finishReason) ?? googlePromptBlock(raw),
+			googleUsage(raw.usageMetadata),
 		);
 	}
 	const choices = Array.isArray(raw.choices) ? raw.choices : [];
@@ -494,6 +561,36 @@ function parseUsage(raw: unknown, inputKey: string, outputKey: string, totalKey?
 		...(total !== undefined ? { totalTokens: total } : {}),
 	};
 }
+/**
+ * A prompt Gemini refused outright: no candidates come back, only
+ * `promptFeedback.blockReason`. Read as a finish reason so it is reported as
+ * withheld, not as an empty reply or a dropped connection.
+ */
+function googlePromptBlock(raw: Record<string, unknown>): string | undefined {
+	const reason = string(object(raw.promptFeedback).blockReason);
+	return reason ? "PROMPT_" + reason : undefined;
+}
+/** Gemini counts thinking apart from the answer; both are output, as every other provider counts them. */
+function googleUsage(raw: unknown): UsageInfo | undefined {
+	const usage = parseUsage(raw, "promptTokenCount", "candidatesTokenCount", "totalTokenCount");
+	const thoughts = number(object(raw).thoughtsTokenCount);
+	if (!usage || thoughts === undefined) return usage;
+	return { ...usage, outputTokens: (usage.outputTokens ?? 0) + thoughts };
+}
+/**
+ * Why a reply that stopped is not an answer: the provider withheld it
+ * (refusal, a safety or recitation block, a content filter) or cut it short
+ * for a reason other than the output limit. Undefined for a normal finish
+ * and for reasons this list does not know, so an unfamiliar server's own
+ * word for "done" is not mistaken for a failure.
+ */
+export function withheldReply(reason: string | undefined): "withheld" | "truncated" | undefined {
+	const normalized = reason?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+	if (!normalized) return undefined;
+	if (["refusal", "content_filter", "safety", "recitation", "prohibited_content", "blocklist", "spii", "image_safety", "language", "other", "malformed_function_call", "malformed_response", "unexpected_tool_call"].includes(normalized) || normalized.startsWith("prompt_")) return "withheld";
+	if (["model_context_window_exceeded", "continuation", "incomplete"].includes(normalized)) return "truncated";
+	return undefined;
+}
 function completion(text: string, finishReason: string | undefined, usage: UsageInfo | undefined): Completion {
 	return { text, ...(finishReason ? { finishReason } : {}), ...(usage ? { usage } : {}) };
 }
@@ -524,7 +621,7 @@ export function parseListedModel(provider: DirectAPIProvider, item: unknown): Di
 	if (typeof rawId !== "string") return [];
 	const id = provider === "google" ? rawId.replace(/^models\//, "") : rawId;
 	const capabilities = object(record.capabilities);
-	const efforts = advertisedEfforts(record) ?? advertisedEfforts(capabilities);
+	const efforts = (provider === "anthropic" ? claudeAdvertisedEfforts(capabilities) : undefined) ?? advertisedEfforts(record) ?? advertisedEfforts(capabilities);
 	if (efforts === undefined) return [{ id }];
 	const defaultEffort = advertisedDefaultEffort(record) ?? advertisedDefaultEffort(capabilities);
 	return [{ id, efforts, ...(defaultEffort && efforts.includes(defaultEffort) ? { defaultEffort } : {}) }];
@@ -542,7 +639,12 @@ function advertisedEfforts(record: Record<string, unknown>): string[] | undefine
 			return typeof effort === "string" ? [effort] : [];
 		});
 	}
-	return flag === true ? fullEffortLadder().map((effort) => effort.id) : undefined;
+	if (flag === true) return [...OPENAI_EFFORTS];
+	// OpenRouter and Tidewire list what each model accepts; without a reasoning
+	// parameter there, the model takes no effort at all.
+	const parameters = record.supported_parameters;
+	if (Array.isArray(parameters)) return parameters.includes("reasoning_effort") || parameters.includes("reasoning") ? [...OPENAI_EFFORTS] : [];
+	return undefined;
 }
 
 function advertisedDefaultEffort(record: Record<string, unknown>): string | undefined {
@@ -554,23 +656,25 @@ function advertisedDefaultEffort(record: Record<string, unknown>): string | unde
 }
 
 /**
- * The effort ladder a model is offered.
+ * The effort ladder a model is offered (D-039, narrowed by D-057).
  *
- * What the endpoint advertised wins. Without that, the ladder is the same
- * six words everywhere the vendor has a reasoning control: OpenAI's own
- * reasoning families, every model on an OpenAI-compatible endpoint (a
- * gateway fronts models the plugin cannot name, and passes the field
- * through), Claude models with extended thinking and Gemini models with a
- * thinking budget. A model documented not to take the control — GPT-4-era
- * OpenAI models, Claude 3.5 and earlier, Gemini 2.0 and earlier — is
- * offered none, so a request to it never carries a field it would refuse.
+ * What the endpoint advertised wins. Without that: OpenAI's reasoning
+ * families get the three levels every one of them takes; Claude models get
+ * what their generation takes (adaptive effort, or a thinking budget);
+ * Gemini models with a thinking budget get the full ladder. A model on an
+ * OpenAI-compatible endpoint that says nothing about reasoning gets none:
+ * vendors such as Groq and Mistral refuse an unknown `reasoning_effort`
+ * outright, so the field is sent only where the endpoint asked for it or the
+ * model is one of OpenAI's own. A model documented not to take the control —
+ * GPT-4-era OpenAI models, Claude 3.5 and earlier, Gemini 2.0 and earlier —
+ * is offered none, so a request to it never carries a field it would refuse.
  */
 export function directEfforts(provider: DirectAPIProvider, model: string, advertised?: string[], advertisedDefault?: string): EffortCapability[] {
 	if (advertised !== undefined) return advertisedEffortLadder(advertised, advertisedDefault);
 	switch (provider) {
-		case "openai": return isOpenAIReasoningFamily(model) ? fullEffortLadder() : [];
-		case "openai-compatible": return fullEffortLadder();
-		case "anthropic": return isAnthropicThinkingFamily(model) ? fullEffortLadder() : [];
+		case "openai":
+		case "openai-compatible": return isOpenAIReasoningFamily(model) ? OPENAI_EFFORTS.map((id) => ({ id })) : [];
+		case "anthropic": return claudeEfforts(model);
 		case "google": return isGoogleThinkingFamily(model) ? fullEffortLadder() : [];
 	}
 }
@@ -579,7 +683,8 @@ function uniqueEfforts(values: EffortCapability[]): EffortCapability[] {
 }
 function describe(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function isAbortError(error: unknown): boolean { return error instanceof Error && error.name === "AbortError"; }
-function isAuthError(error: unknown): boolean { const value = describe(error); return value.includes("HTTP 401") || value.includes("HTTP 403") || value.includes("Authentication Error"); }
+/** 401/403 everywhere, and Google's 400 for a key it does not recognise. */
+function isAuthError(error: unknown): boolean { const value = describe(error); return value.includes("HTTP 401") || value.includes("HTTP 403") || value.includes("Authentication Error") || value.includes("API_KEY_INVALID") || /API key not valid/i.test(value); }
 /** The endpoint answered, and said no. Carries the status so health can tell an answer from silence. */
 class HttpStatusError extends Error {
 	constructor(readonly status: number, message: string, readonly retryAfterSec?: number) { super(message); this.name = "HttpStatusError"; }
@@ -594,6 +699,6 @@ export function retryAfterSeconds(headers: Headers | null | undefined): number |
 	return Number.isNaN(at) ? undefined : Math.max(0, Math.ceil((at - Date.now()) / 1000));
 }
 async function httpError(response: { status: number; text: string; headers?: Headers | null }, credential: string): Promise<Error> {
-	const safe = redactCredential(response.text.slice(0, 200), credential);
+	const safe = redactCredential(response.text, credential).slice(0, 200);
 	return new HttpStatusError(response.status, "HTTP " + response.status + (safe ? "：" + safe : ""), retryAfterSeconds(response.headers));
 }

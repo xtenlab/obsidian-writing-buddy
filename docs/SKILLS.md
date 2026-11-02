@@ -262,11 +262,3 @@ reported rather than silently promoted.
 - User-created Skills, legacy source files, and the migration ledger survive.
 - Reset removes only the selected built-in's writer-owned override. There is no
   global “restore built-ins” operation and no overwrite of user files.
-
-## Memory boundary
-
-`WritingBuddy/memory/*.md` currently contains only manually curated notes. Those
-notes may be selected as lower-priority read-only evidence, but Writing Buddy
-does not create persistent memories, proposals, revisions, expiry records, or
-an embedding/vector index. Automatic memory capture and Skill evolution remain
-future design work.

@@ -8,7 +8,7 @@
  */
 
 import type { EvidenceItem, EvidenceKind } from "./evidence";
-import { kindOf, labelFor, splitSections } from "./evidence";
+import { contextHeadingLabel, kindOf, labelFor, splitSections } from "./evidence";
 import { hasExplicitArchiveMetadata, isEligibleContextPath } from "./eligibility";
 import { extractRelevantPassage, extractTerms, previewAroundMatch } from "./retrieval";
 import type { VaultReader } from "./types";
@@ -23,7 +23,6 @@ import type {
 import { DEFAULT_RESEARCH_AROUND_CHARS, MAX_RESEARCH_AROUND_CHARS } from "./ResearchProtocol";
 import { countChars } from "../util/text";
 import { contentRevision } from "./revision";
-import { projectPaths } from "../storage/paths";
 
 export const DEFAULT_RESEARCH_FILE_LIMIT = 12;
 export const DEFAULT_RESEARCH_EVIDENCE_LIMIT = 16;
@@ -236,7 +235,16 @@ export class ResearchEvidenceLedger {
 		if (allowance <= currentChars) return { ...current };
 		const expanded = truncateEvidenceExcerpt(excerpt, allowance);
 		if (!expanded.trim() || countChars(expanded) <= currentChars) return { ...current };
-		const updated = { ...current, excerpt: expanded, truncated: truncated || countChars(excerpt) > allowance };
+		// The selection is the passage a rewrite replaces. Widened, it is no
+		// longer that passage: kept as "the selected text" it would travel into
+		// the rewrite as such, and a rewrite of the wider window would repeat the
+		// sentences around the selection once applied. It becomes the selection's
+		// context, as the evidence around a selection is everywhere else; the
+		// selection itself always travels with the rewrite on its own.
+		const relabel = current.kind === "selection"
+			? { kind: "current" as const, heading: contextHeadingLabel(), label: `${current.name} · ${contextHeadingLabel()}` }
+			: {};
+		const updated = { ...current, ...relabel, excerpt: expanded, truncated: truncated || countChars(excerpt) > allowance };
 		this.items[index] = updated;
 		this.chars += countChars(expanded) - currentChars;
 		this.fingerprints.add(evidenceFingerprint(expanded));
@@ -840,8 +848,7 @@ function rankSearchPaths(
 }
 
 function evidenceForPassage(path: string, text: string, truncated: boolean, sourceChars?: number): EvidenceItem[] {
-	const role = path.startsWith(`${projectPaths.memoryDir}/`) ? "memory" as const : "retrieved" as const;
-	const kind: EvidenceKind = kindOf({ path, role, text, truncated });
+	const kind: EvidenceKind = kindOf({ path, role: "retrieved", text, truncated });
 	const name = path.split("/").pop()?.replace(/\.md$/iu, "") ?? path;
 	return splitSections(text).map((section) => ({
 		id: "", path, name, kind, heading: section.heading, label: labelFor(kind, name, section.heading),
@@ -880,7 +887,12 @@ function evidenceIdentity(item: EvidenceItem): string {
 	if (item.kind === "selection") {
 		return `selection:${item.path}:${item.range?.from.line ?? ""}:${item.range?.from.ch ?? ""}:${item.range?.to.line ?? ""}:${item.range?.to.ch ?? ""}:${item.excerpt}`;
 	}
-	return `${item.path}#${item.heading ?? ""}`;
+	// The passage itself is part of who it is: a search that centres a second
+	// window on another part of the same section (no heading inside either
+	// window) is new evidence, not the first window again. Equal text still
+	// collapses into one item.
+	const text = evidenceFingerprint(item.excerpt);
+	return `${item.path}#${item.heading ?? ""}#${text.length}:${text.slice(0, 160)}`;
 }
 
 function evidenceFingerprint(text: string): string {

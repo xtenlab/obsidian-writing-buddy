@@ -77,20 +77,100 @@ export function resolveEffort(stored: string | undefined, efforts: readonly Effo
 }
 
 /**
- * Anthropic: extended thinking is sized in tokens, and the answer's own
- * budget must exceed it. Levels a Claude model cannot meet are refused by
- * the API and surface as its error.
+ * Anthropic: how each Claude model takes thinking (Anthropic's documentation,
+ * 2026-10). Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5 and later, and
+ * Fable/Mythos refuse `budget_tokens` with a 400 and take only adaptive
+ * thinking, its depth set by `output_config.effort` (`low` … `max`, no
+ * `minimal`). Opus and Sonnet 4.6 take adaptive thinking too, without `xhigh`.
+ * 3.7 and the 4.0–4.5 lines take a budget in tokens, which the answer's own
+ * share must exceed. 3.5 and earlier have no thinking. A Claude model whose
+ * version cannot be read is a newer one, so it is treated as adaptive. A
+ * model that is not Claude at all is another vendor's behind the Messages
+ * wire (Kimi, DeepSeek, GLM), and those take a budget.
  */
+export type ClaudeThinking = "adaptive" | "budget" | "none";
+
+export function claudeThinking(model: string): ClaudeThinking {
+	const bare = bareModelId(model).replace(/[-@]\d{8}$/, "");
+	if (!bare.startsWith("claude")) return "budget";
+	if (/^claude-(fable|mythos)\b/.test(bare)) return "adaptive";
+	const version = claudeVersion(bare);
+	if (!version) return "adaptive";
+	const [major, minor] = version;
+	if (major >= 5 || (major === 4 && minor >= 6)) return "adaptive";
+	if (major === 4 || (major === 3 && minor >= 7)) return "budget";
+	return "none";
+}
+
+/** `claude-opus-4-6`, `claude-sonnet-4`, `claude-3-7-sonnet`: the model's version as [major, minor]. */
+function claudeVersion(bare: string): [number, number] | null {
+	const named = /^claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?![\d])/.exec(bare);
+	if (named) return [Number(named[1]), Number(named[2] ?? 0)];
+	const legacy = /^claude-(\d+)(?:-(\d{1,2}))?-(?:opus|sonnet|haiku)/.exec(bare);
+	if (legacy) return [Number(legacy[1]), Number(legacy[2] ?? 0)];
+	return null;
+}
+
+/** The ladder a Claude model is offered when its Models API entry says nothing about effort. */
+export function claudeEfforts(model: string): EffortCapability[] {
+	const mode = claudeThinking(model);
+	if (mode === "none") return [];
+	// Another vendor's model on the Messages wire: the three budgets every one of them takes.
+	if (!bareModelId(model).startsWith("claude")) return (["low", "medium", "high"] as const).map((id) => ({ id }));
+	if (mode === "budget") return fullEffortLadder();
+	const bare = bareModelId(model).replace(/[-@]\d{8}$/, "");
+	const levels: EffortLevel[] = /^claude-(?:opus|sonnet)-4-6$/.test(bare) ? ["low", "medium", "high", "max"] : ["low", "medium", "high", "xhigh", "max"];
+	return levels.map((id) => ({ id }));
+}
+
+/**
+ * Anthropic's Models API entry, read the way Anthropic publishes it:
+ * `capabilities.effort.<level>.supported` names the levels a model takes, and
+ * `capabilities.thinking.types.enabled` a model that thinks on a budget.
+ * Undefined when the entry does not say, so the model table above decides.
+ */
+export function claudeAdvertisedEfforts(capabilities: Record<string, unknown>): string[] | undefined {
+	const supported = (value: unknown): boolean | undefined => {
+		const flag = typeof value === "object" && value !== null ? (value as { supported?: unknown }).supported : undefined;
+		return typeof flag === "boolean" ? flag : undefined;
+	};
+	const thinking = capabilities.thinking;
+	if (supported(thinking) === false) return [];
+	const effort = capabilities.effort;
+	if (supported(effort) === true && typeof effort === "object" && effort !== null) {
+		const levels = EFFORT_LADDER.filter((level) => supported((effort as Record<string, unknown>)[level]) === true);
+		if (levels.length > 0) return levels;
+	}
+	const types = typeof thinking === "object" && thinking !== null ? (thinking as { types?: unknown }).types : undefined;
+	if (typeof types === "object" && types !== null && supported((types as Record<string, unknown>).enabled) === true) return [...EFFORT_LADDER];
+	return undefined;
+}
+
+/** Tokens for thinking at each level: a budget on older models, the room adaptive thinking gets on newer ones. */
 const ANTHROPIC_THINKING_BUDGET: Record<EffortLevel, number> = {
 	minimal: 1024, low: 2048, medium: 4096, high: 8192, xhigh: 16384, max: 32768,
 };
 /** Output tokens reserved for the answer itself, on top of the thinking budget. */
 export const ANTHROPIC_ANSWER_TOKENS = 8192;
 
-export function anthropicThinking(effort: string | null): { thinking: { type: "enabled"; budget_tokens: number }; max_tokens: number } | { max_tokens: number } {
+export type AnthropicThinkingFields =
+	| { max_tokens: number }
+	| { thinking: { type: "enabled"; budget_tokens: number }; max_tokens: number }
+	| { thinking: { type: "adaptive"; display: "summarized" }; output_config: { effort: string }; max_tokens: number };
+
+/**
+ * The thinking fields of one Claude request. Adaptive thinking is asked to
+ * return summaries: the plugin drops thinking from the reply either way, but
+ * with the newer models' default of omitted thinking the stream stays silent
+ * for as long as the model thinks, and a proxy in between may give up on it.
+ */
+export function anthropicThinking(model: string, effort: string | null): AnthropicThinkingFields {
 	if (!isEffortLevel(effort)) return { max_tokens: ANTHROPIC_ANSWER_TOKENS };
+	const mode = claudeThinking(model);
 	const budget = ANTHROPIC_THINKING_BUDGET[effort];
-	return { thinking: { type: "enabled", budget_tokens: budget }, max_tokens: budget + ANTHROPIC_ANSWER_TOKENS };
+	if (mode === "adaptive") return { thinking: { type: "adaptive", display: "summarized" }, output_config: { effort }, max_tokens: budget + ANTHROPIC_ANSWER_TOKENS };
+	if (mode === "budget") return { thinking: { type: "enabled", budget_tokens: budget }, max_tokens: budget + ANTHROPIC_ANSWER_TOKENS };
+	return { max_tokens: ANTHROPIC_ANSWER_TOKENS };
 }
 
 /**
@@ -129,16 +209,18 @@ export function isOpenAIReasoningFamily(model: string): boolean {
 	return /^(gpt-5|o[134])(?![a-z])/.test(bareModelId(model));
 }
 
-/** Claude models with extended thinking: 3.7 and every Claude 4 line. Earlier models refuse `thinking`. */
-export function isAnthropicThinkingFamily(model: string): boolean {
-	const bare = bareModelId(model);
-	if (!bare.startsWith("claude")) return false;
-	return !/^claude-3-(opus|sonnet|haiku|5)/.test(bare);
-}
+/**
+ * The levels every OpenAI reasoning model takes. OpenAI's set is wider
+ * (`none`, `minimal`, `xhigh`), but which of those a model accepts differs
+ * from model to model and the API does not say; `max` is not an OpenAI value
+ * at all. These three are the ones no reasoning model refuses.
+ */
+export const OPENAI_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high"];
 
-/** Gemini models with a `thinkingConfig`: 2.5 and later. 1.5 and 2.0 refuse it. */
+/** Gemini models with a `thinkingConfig`: 2.5 and later text models. 1.5 and 2.0, and image, speech and embedding models, refuse it. */
 export function isGoogleThinkingFamily(model: string): boolean {
-	return /^gemini-(2\.5|[3-9])/.test(bareModelId(model));
+	const bare = bareModelId(model);
+	return /^gemini-(2\.5|[3-9])/.test(bare) && !/(image|tts|embedding|live|audio)/.test(bare);
 }
 
 /** Ollama models whose `think` takes a level rather than a flag. */

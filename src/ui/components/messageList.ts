@@ -69,6 +69,13 @@ export interface MessageListOptions {
 	/** Retry a persisted whole-manuscript failure without duplicating its user turn. */
 	onContinueFull: (messageIndex: number) => void;
 	canContinueFull: (message: ConversationMessage, messageIndex: number) => boolean;
+	/**
+	 * A rewrite or continuation turn whose reply carries no candidate: it is
+	 * said so under the reply instead of passing for an answer. `retry` is set
+	 * only on the latest turn, where the writer's selection is still the one.
+	 */
+	missingCandidate: (message: ConversationMessage, messageIndex: number, blocks: readonly MessageBlock[]) => { retry: boolean } | null;
+	onRetryCandidate: (messageIndex: number) => void;
 	busy: boolean;
 	/** Candidate actions, addressed by the key the presenter assigned. */
 	onSetDiffMode: (key: string, mode: DiffViewMode) => void;
@@ -118,6 +125,17 @@ export function renderMessages(parent: HTMLElement, options: MessageListOptions)
 
 		if (message.error) {
 			element.createDiv({ cls: "wb-msg-error", text: message.error });
+		}
+
+		const missing = message.role === "assistant" && !message.error ? options.missingCandidate(message, index, rendered.blocks) : null;
+		if (missing) {
+			const notice = element.createDiv({ cls: "wb-msg-no-candidate", attr: { role: "note" } });
+			notice.createSpan({ text: t("msgList.noCandidate") });
+			if (missing.retry) {
+				const retry = notice.createEl("button", { cls: "wb-ghost-btn", text: t("msgList.retryCandidate"), attr: { type: "button" } });
+				retry.disabled = options.busy;
+				retry.addEventListener("click", () => options.onRetryCandidate(index));
+			}
 		}
 
 		if (message.role === "assistant") {

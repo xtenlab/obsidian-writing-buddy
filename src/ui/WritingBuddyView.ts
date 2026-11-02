@@ -26,7 +26,6 @@
 
 import { ItemView, Notice, type Editor, type WorkspaceLeaf } from "obsidian";
 import { t } from "../i18n";
-import { novelProgressText } from "./novelProgress";
 import { displayTitle } from "../session/titles";
 
 import type WritingBuddyPlugin from "../main";
@@ -408,7 +407,6 @@ export class WritingBuddyView extends ItemView {
 			onOpenSettings: () => this.plugin.openSettings(),
 		});
 
-		this.renderMemoryStatus(container);
 
 		const scroll = container.createDiv({ cls: "wb-scroll" });
 		this.scrollEl = scroll;
@@ -520,6 +518,8 @@ export class WritingBuddyView extends ItemView {
 			onOpenAttachment: (attachment) => void this.openAttachment(attachment),
 			onOpenCitation: (citation) => void this.plugin.revealCitation(citation),
 			canContinueFull: (message, messageIndex) => canContinueFullFailure(session, message, messageIndex),
+			missingCandidate: (message, messageIndex, blocks) => this.missingCandidate(session, message, messageIndex, blocks),
+			onRetryCandidate: (messageIndex) => void this.retryCandidate(session.id, messageIndex),
 			onContinueFull: (messageIndex) => void this.continueFullCorpus(session.id, messageIndex),
 			onSetDiffMode: (key, mode) => {
 				const anchor = this.captureCandidateAnchor(key);
@@ -944,49 +944,6 @@ export class WritingBuddyView extends ItemView {
 		}
 	}
 
-	/** What the book knows that this turn should see; null when memory has nothing to add. */
-	private async novelMemoryFor(turn: Readonly<TurnPlan>): Promise<EvidenceItem | null> {
-		if (turn.context.execution === "full-current-manuscript") return null;
-		// Test doubles of the plugin may carry no memory at all; a turn without it is the turn as it always was.
-		if (typeof this.plugin.activeEditorState !== "function" || !this.plugin.novelMemory) return null;
-		const editor = this.plugin.activeEditorState();
-		const path = editor.path ?? turn.currentFile ?? null;
-		return this.plugin.novelMemory.contextFor({
-			question: turn.question,
-			activeFilePath: path,
-			activeFileText: editor.path === path ? editor.text : null,
-			cursorOffset: editor.path === path ? editor.cursor : null,
-		});
-	}
-
-	/** One quiet line while knowledge is being built or updated, a retry when some of it could not be. */
-	private renderMemoryStatus(container: HTMLElement): void {
-		const status = this.plugin.novelMemory.status();
-		const running = status.state === "building" || status.state === "updating" || status.state === "rebuilding";
-		const transient = running || status.state === "partial" || status.state === "paused";
-		if (!transient && status.awaitingManuscript === 0) return;
-		const line = container.createDiv({ cls: `wb-memory-status is-${status.state}`, attr: { role: "status" } });
-		const progress = novelProgressText(status);
-		const label = status.state === "partial"
-			? t("memory.partial")
-			: status.state === "paused" ? t("memory.paused", { count: status.pending })
-			: status.state === "building" ? `${t("memory.building")}${progress ? ` ${progress}` : ""}`
-			: status.state === "rebuilding" ? `${t("memory.rebuilding")}${progress ? ` ${progress}` : ""}`
-			: status.state === "updating" ? `${t("memory.updating")}${progress ? ` ${progress}` : ""}`
-			: t("memory.awaiting", { count: status.awaitingManuscript });
-		line.createSpan({ cls: "wb-memory-status-label", text: label });
-		if (status.state === "partial") {
-			const retry = line.createEl("button", { cls: "wb-memory-action", text: t("memory.retry"), attr: { type: "button" } });
-			retry.addEventListener("click", () => void this.plugin.retryNovelMemory());
-		} else if (status.state === "paused") {
-			const resume = line.createEl("button", { cls: "wb-memory-action", text: t("memory.resume"), attr: { type: "button" } });
-			resume.addEventListener("click", () => void this.plugin.resumeNovelMemory());
-		} else if (running) {
-			const pause = line.createEl("button", { cls: "wb-memory-action", text: t("memory.pause"), attr: { type: "button" } });
-			pause.addEventListener("click", () => this.plugin.pauseNovelMemory());
-		}
-	}
-
 	private effectivePreferences(session: ConversationSession | null): SessionPreferences {
 		const preferences = effectiveComposerPreferences(
 			session ? this.plugin.vaultState.sessionPreferences(session.id) : null,
@@ -1104,6 +1061,34 @@ export class WritingBuddyView extends ItemView {
 		this.pendingSkill = skill;
 		this.render();
 		this.focusComposer(true);
+	}
+
+	/**
+	 * A rewrite or continuation that came back without a candidate. The model
+	 * answered something else — on 2026-11-01 a two-character "改写" in a long
+	 * conversation came back as a knowledge summary — and the reply must not
+	 * pass for the rewrite the writer asked for.
+	 */
+	private missingCandidate(session: ConversationSession, message: ConversationMessage, messageIndex: number, blocks: readonly MessageBlock[]): { retry: boolean } | null {
+		if (message.role !== "assistant" || message.candidate || blocks.some((block) => block.kind === "candidate")) return null;
+		const userIndex = immediatelyPrecedingUserIndex(session.messages, messageIndex);
+		const user = userIndex === undefined ? undefined : session.messages[userIndex];
+		const skill = user?.skillId ? this.plugin.skills.get(user.skillId) : undefined;
+		if (!user?.selection || !actsOnSelection(skill)) return null;
+		return { retry: messageIndex === session.messages.length - 1 };
+	}
+
+	/** Run the same action again on the current selection, through the ordinary send path and all of its checks. */
+	private async retryCandidate(sessionId: string, messageIndex: number): Promise<void> {
+		if (this.closed || this.plugin.foregroundTurns.isActive) return;
+		const session = this.plugin.sessions.get(sessionId);
+		if (!session || this.plugin.sessions.getActiveId() !== sessionId) return;
+		const userIndex = immediatelyPrecedingUserIndex(session.messages, messageIndex);
+		const user = userIndex === undefined ? undefined : session.messages[userIndex];
+		const skill = user?.skillId ? this.plugin.skills.get(user.skillId) : undefined;
+		if (!skill || !actsOnSelection(skill)) return;
+		this.pendingSkill = skill;
+		await this.send();
 	}
 
 	// =======================================================================
@@ -1286,6 +1271,7 @@ export class WritingBuddyView extends ItemView {
 			current: question,
 			...(turnSelection ? { activeSelection: turnSelection } : {}),
 			supersededSelection: this.supersessionCheck(),
+			...(actsOnSelection(skill) ? { scope: "selection" as const } : {}),
 		});
 		const historicalSelections = selectHistoricalSelections(session.messages, question, turnSelection);
 		const turn = freezeTurnPlan({
@@ -1409,6 +1395,7 @@ export class WritingBuddyView extends ItemView {
 				session: requestSession,
 				current: originalUser.text,
 				...(turnSelection ? { activeSelection: turnSelection } : {}),
+				...(actsOnSelection(skill) ? { scope: "selection" as const } : {}),
 			});
 			const context = Object.freeze({
 				...planContext({
@@ -1548,10 +1535,7 @@ export class WritingBuddyView extends ItemView {
 		// One evidence list, used both to build the request and to resolve the
 		// citations that come back. Two derivations could drift; this cannot.
 		const baseEvidence = buildEvidence(context);
-		const evidence = withNovelMemory(
-			mergeHistoricalSelectionEvidence(baseEvidence, turn.historicalSelections),
-			await this.novelMemoryFor(turn),
-		);
+		const evidence = mergeHistoricalSelectionEvidence(baseEvidence, turn.historicalSelections);
 		accountForAddedEvidence(context, addedEvidence(baseEvidence, evidence));
 		if (context.report) {
 			context.report.sources = evidence.map((item) => ({
@@ -1854,10 +1838,7 @@ export class WritingBuddyView extends ItemView {
 		if (!this.canUseLease(lease)) return;
 
 		const baseEvidence = buildEvidence(initialContext);
-		const initialEvidence = withNovelMemory(
-			mergeHistoricalSelectionEvidence(baseEvidence, turn.historicalSelections),
-			await this.novelMemoryFor(turn),
-		);
+		const initialEvidence = mergeHistoricalSelectionEvidence(baseEvidence, turn.historicalSelections);
 		accountForAddedEvidence(initialContext, addedEvidence(baseEvidence, initialEvidence));
 		if (turn.selection && replacesSelection(turn.skill) && !turn.conversational) {
 			return this.runResearchRewriteTurn(session, turn, lease, initialContext, initialEvidence);
@@ -2476,12 +2457,16 @@ export class WritingBuddyView extends ItemView {
 function sourceSnapshotType(
 	kind: EvidenceKind,
 	heading: string | null,
-): "selection" | "surroundings" | "current" | "memory" | "retrieved" {
+): "selection" | "surroundings" | "current" | "retrieved" {
 	if (kind === "selection") return "selection";
 	if (heading === "选区上下文") return "surroundings";
 	if (kind === "current") return "current";
-	if (kind === "memory") return "memory";
 	return "retrieved";
+}
+
+/** A skill whose result replaces or continues the selected passage. */
+function actsOnSelection(skill: Skill | undefined): boolean {
+	return skill?.action === "rewrite" || skill?.action === "continue";
 }
 
 /** A Continue action belongs only to the assistant failure directly following its user turn. */
@@ -2709,16 +2694,6 @@ function evidenceIdentity(item: EvidenceItem): string {
 
 function selectionEvidenceIdentity(selection: SelectionAttachment): string {
 	return `${selection.filePath}:${selection.from.line}:${selection.from.ch}:${selection.to.line}:${selection.to.ch}:${selection.text}`;
-}
-
-/**
- * The book's knowledge joins the turn as one more admitted evidence item,
- * numbered after everything the turn already carries. Absent when there is
- * no book, no engine, or nothing relevant.
- */
-export function withNovelMemory(evidence: EvidenceItem[], memory: EvidenceItem | null): EvidenceItem[] {
-	if (!memory || evidence.length >= MAX_EVIDENCE_ITEMS) return evidence;
-	return [...evidence, { ...memory, id: `S${evidence.length + 1}` }];
 }
 
 function addedEvidence(base: readonly EvidenceItem[], merged: readonly EvidenceItem[]): EvidenceItem[] {

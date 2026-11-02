@@ -128,7 +128,7 @@ export function resolveDeviceStorage(): DeviceStorage {
 }
 
 /** Keys older builds wrote that no current code reads. Dropped on the first load that sees them. */
-export const STALE_DEVICE_KEYS = ["githubUpdateToken"] as const;
+export const STALE_DEVICE_KEYS = ["githubUpdateToken", "memoryService"] as const;
 
 export class DeviceStore {
 	constructor(private readonly storage: DeviceStorage = resolveDeviceStorage()) {}
@@ -141,8 +141,9 @@ export class DeviceStore {
 			const parsed = parseConnections(decoded.connections);
 			const connections = parsed;
 			// Builds before Community distribution kept a GitHub token here for their own
-			// update check. It is neither read nor shown any more; the first load after
-			// the upgrade drops it from device storage so it does not linger.
+			// update check, and builds with external memory kept that service's address
+			// and key. Neither is read or shown any more; the first load after the
+			// upgrade drops them from device storage so no credential lingers.
 			const settings: DeviceSettings = {
 				schemaVersion: CONNECTION_SETTINGS_VERSION,
 				connections,

@@ -4,7 +4,6 @@ import { defaultEffortFor, resolveEffort } from "../backend/effort";
 import { App, Notice, PluginSettingTab, Setting, type SettingDefinition, type SettingDefinitionItem, type SettingGroupItem } from "obsidian";
 import type WritingBuddyPlugin from "../main";
 import { getLocale, t } from "../i18n";
-import { novelProgressText } from "./novelProgress";
 import { ICONS, iconSpan } from "./icons";
 import { ConfirmModal } from "./modals";
 import { ConnectionModal } from "./connectionModal";
@@ -123,7 +122,6 @@ export class WritingBuddySettingTab extends PluginSettingTab {
 					...this.locationExtraDefinitions(),
 					{ name: t("settings.sessions.name"), render: (setting) => this.sessionsRow(setting, null) },
 					{ name: t("settings.storage.name"), render: (setting) => this.storageRow(setting, null) },
-					{ name: t("settings.novelMemory.name"), render: (setting) => this.novelMemoryRow(setting) },
 				],
 			},
 			{
@@ -880,66 +878,6 @@ export class WritingBuddySettingTab extends PluginSettingTab {
 		for (const item of this.locationExtraDefinitions()) item.render(new Setting(containerEl));
 		this.sessionsRow(new Setting(containerEl), status);
 		this.storageRow(new Setting(containerEl), status);
-		this.novelMemoryRow(new Setting(containerEl));
-	}
-
-	/**
-	 * The state of the book's knowledge and the low-frequency actions on it:
-	 * build, pause or resume a pass, retry, rebuild. The feature is marked
-	 * experimental, and the row says what a build costs before it is started.
-	 */
-	private novelMemoryRow(setting: Setting): void {
-		const memory = this.plugin.novelMemory;
-		const status = memory.status();
-		const state = status.state;
-		const progress = novelProgressText(status);
-		const desc = state === "unconfigured" ? t("settings.novelMemory.unconfigured")
-			: state === "unavailable" ? t("memory.unavailable")
-			: state === "paused" ? `${t("memory.paused", { count: status.pending })}${progress ? ` · ${progress}` : ""}`
-			: status.pausedUntil ? `${t("memory.waiting", { seconds: Math.max(1, Math.ceil((Date.parse(status.pausedUntil) - Date.now()) / 1000)) })}${status.detail ? ` · ${status.detail}` : ""}`
-			: state === "building" ? `${t("memory.building")}${progress ? ` ${progress}` : ""}`
-			: state === "updating" ? `${t("memory.updating")}${progress ? ` ${progress}` : ""}`
-			: state === "rebuilding" ? `${t("memory.rebuilding")}${progress ? ` ${progress}` : ""}`
-			: state === "partial" ? `${t("memory.partial")} (${status.failures.length})`
-			: t("memory.updated");
-		setting.setName(t("settings.novelMemory.name")).setDesc(desc);
-		setting.settingEl.addClass("wb-novel-memory-row");
-		setting.nameEl.createSpan({ cls: "wb-experimental-badge", text: t("settings.experimental") });
-		// What it gives and what a build costs, on hover, whatever state the row is in.
-		iconSpan(setting.nameEl, "info", "wb-info-icon").setAttrs({
-			"aria-label": `${t("settings.novelMemory.benefit")} ${t("settings.novelMemory.cost")}`,
-			"data-tooltip-position": "top",
-			"aria-hidden": "false",
-			role: "img",
-		});
-		if (state === "unconfigured") {
-			setting.addButton((button) => button.setButtonText(t("settings.novelMemory.build")).onClick(async () => {
-				await this.plugin.buildNovelMemory();
-				this.rerender();
-			}));
-			return;
-		}
-		if (state === "paused") {
-			setting.addButton((button) => button.setButtonText(t("settings.novelMemory.resume")).setCta().onClick(async () => {
-				await this.plugin.resumeNovelMemory();
-				this.rerender();
-			}));
-		} else if (state === "building" || state === "rebuilding" || state === "updating") {
-			setting.addButton((button) => button.setButtonText(t("settings.novelMemory.pause")).onClick(() => {
-				this.plugin.pauseNovelMemory();
-				this.rerender();
-			}));
-		}
-		if (state === "partial") {
-			setting.addButton((button) => button.setButtonText(t("settings.novelMemory.retry")).onClick(async () => {
-				await this.plugin.retryNovelMemory();
-				this.rerender();
-			}));
-		}
-		setting.addButton((button) => button.setButtonText(t("settings.novelMemory.rebuild")).setDisabled(!memory.engineAvailable).onClick(async () => {
-			await this.plugin.rebuildNovelMemory();
-			this.rerender();
-		}));
 	}
 
 	// -------------------------------------------------------------------------

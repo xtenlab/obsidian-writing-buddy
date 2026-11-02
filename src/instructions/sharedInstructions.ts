@@ -77,6 +77,7 @@ const ZH: SharedInstructionSet = {
 	citation: [
 		"引用方式：",
 		"附上的可引用资料带有编号（[S1]、[S2]……）。某个判断确实来自资料时，把编号紧跟在它支持的那句话后面；一句话有多个依据就连写，如 [S2][S5]。",
+		"资料的权威顺序：正文（所选正文、当前章节、相关章节）是首要依据。人物设定、世界设定、大纲这类作者笔记默认不算权威，它们可能已经过时；笔记与正文对不上时，明确指出来，按正文写，由作者定夺。",
 		"不要把出处集中堆在回答末尾，不要编造编号，也不要用文件路径代替编号。",
 		"没有使用资料就不要添加引用。写给稿件的候选正文中不得出现引用编号。",
 	].join("\n"),
@@ -94,6 +95,7 @@ const ZH: SharedInstructionSet = {
 	].join("\n"),
 	rewriteOutput: [
 		"回复格式：",
+		"要改的永远是当前所选正文。作者只写“改写”“润色”这类简短指令时也一样：对话里之前的回复、草案、清单或讨论都不是这次要改的对象，只供理解作者的意图。",
 		"先用一两句说明这段的主要问题和你这次要处理什么，再给出候选正文。",
 		"把可替换当前选区的完整正文放进一个 ```改写后 围栏。围栏内只有正文本身，不要标题、引号或引用编号。",
 		"围栏必须给出：作者在等一份可以直接应用的候选，只给评语不算完成。",
@@ -102,6 +104,7 @@ const ZH: SharedInstructionSet = {
 	].join("\n"),
 	continueOutput: [
 		"回复格式：",
+		"要接着写的永远是当前所选正文。作者只写“续写”这类简短指令时也一样：对话里之前的回复或讨论不是这次要接着写的对象。",
 		"先用一两句说明你要顺着什么往下写，再给出新写的内容。",
 		"把应接在当前选区之后的新写内容放进一个 ```续写 围栏，不要重复或改写已有正文。围栏内只有正文本身，不要标题、引号或引用编号。",
 		"围栏必须给出：作者在等一份可以直接应用的候选，只给评语不算完成。",
@@ -140,6 +143,7 @@ const EN: SharedInstructionSet = {
 	citation: [
 		"Citations:",
 		"The attached citable material is numbered ([S1], [S2]…). When a claim really comes from the material, put the id right after the sentence it supports; several supports run together, e.g. [S2][S5].",
+		"Order of authority: the manuscript (selection, current chapter, related chapters) comes first. The author's notes — character sheets, world sheets, outlines — are not authority by default; they may be out of date. When a note disagrees with the manuscript, say so plainly, follow the text, and leave the decision to the author.",
 		"Do not pile sources at the end of the reply, do not invent ids, and do not use file paths in place of ids.",
 		"Add no citation when no material was used. Candidate text written for the manuscript must contain no citation ids.",
 	].join("\n"),
@@ -157,6 +161,7 @@ const EN: SharedInstructionSet = {
 	].join("\n"),
 	rewriteOutput: [
 		"Reply format:",
+		"What you rewrite is always the current selection, also when the author writes only a short instruction such as \"rewrite\" or \"polish\": earlier replies, drafts, lists or discussion in the conversation are not what is being rewritten; they only help you understand what the author wants.",
 		"First say in a sentence or two what the passage's main problem is and what you will address this time, then give the candidate text.",
 		"Put complete text that can replace the current selection inside one ```rewrite fence. The fence holds the text itself only — no headings, quotes, or citation ids.",
 		"The fence is required: the author is waiting for a candidate they can apply; commentary alone is not done.",
@@ -165,6 +170,7 @@ const EN: SharedInstructionSet = {
 	].join("\n"),
 	continueOutput: [
 		"Reply format:",
+		"What you continue is always the current selection, also when the author writes only a short instruction such as \"continue\": earlier replies or discussion in the conversation are not what is being continued.",
 		"First say in a sentence or two what you will continue from, then give the new text.",
 		"Put the new text that should follow the current selection inside one ```continue fence; do not repeat or rewrite existing text. The fence holds the text itself only — no headings, quotes, or citation ids.",
 		"The fence is required: the author is waiting for a candidate they can apply; commentary alone is not done.",

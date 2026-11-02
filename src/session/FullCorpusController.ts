@@ -987,7 +987,8 @@ export function recoverableFailure(outcome: Pick<CallOutcome, "errorCode" | "sta
 	if (errorCode === "rate_limited" || status === 429) return "rate-limit";
 	if (status === 503 && outcome.retryAfterSec !== undefined) return "rate-limit";
 	if (errorCode === "transport" || errorCode === "stream_interrupted") return "transport";
-	if (status === 500 || status === 502 || status === 503 || status === 504) return "transport";
+	// 529 is Anthropic's "overloaded", which its documentation says to retry.
+	if (status === 500 || status === 502 || status === 503 || status === 504 || status === 529) return "transport";
 	if (errorCode === "direct_api_error" && status === undefined) return "transport";
 	return null;
 }

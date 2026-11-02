@@ -48,7 +48,7 @@ export interface ContextDocument {
 	/** Vault-relative path. Never an absolute filesystem path. */
 	path: string;
 	/** Why this document is here, for the serialised header. */
-	role: "active-file" | "selection-context" | "linked" | "memory" | "retrieved";
+	role: "active-file" | "selection-context" | "linked" | "retrieved";
 	text: string;
 	/** True when `text` was cut to fit the budget. */
 	truncated: boolean;
@@ -170,9 +170,9 @@ export function contextBudgetFor(depth: ContextDepth | ResolvedContextDepth | un
  * The Context choices the Composer and Settings offer for ordinary turns.
  *
  * `full` is no longer among them. Whole-manuscript analysis is a separate,
- * explicit operation — the command "Analyze whole manuscript", the Continue
- * offered after an Auto turn that needs it, and manual rebuilds of novel
- * knowledge — not a setting a conversation carries into every generation.
+ * explicit operation — the command "Analyze whole manuscript" and the Continue
+ * offered after an Auto turn that needs it — not a setting a conversation
+ * carries into every generation.
  * The `ContextDepth` type keeps `full` so stored turns and those explicit
  * operations still plan exactly as they did.
  */

@@ -1,8 +1,7 @@
 # dependencies
 node_modules/
 
-# build output. Anchored: an unanchored `dist/` also swallowed the vendored
-# engine under vendor/recanta/dist, which must be committed.
+# build output (anchored on purpose: a bare `dist/` also matches nested folders)
 main.js
 /dist/
 /dist-sideload/

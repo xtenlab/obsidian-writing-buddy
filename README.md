@@ -22,12 +22,12 @@ Bring your own model. Every generated edit stays a candidate until you choose **
 <p align="center"><em>From selection to suggestion to review, without leaving the manuscript.</em></p>
 
 <p align="center">
-<a href="https://github.com/onezeroooo/obsidian-writing-buddy/stargazers"><img src="https://img.shields.io/github/stars/onezeroooo/obsidian-writing-buddy?style=for-the-badge&logo=github&label=Star%20on%20GitHub" alt="Star Writing Buddy on GitHub"></a>
+<a href="https://github.com/xtenlab/obsidian-writing-buddy/stargazers"><img src="https://img.shields.io/github/stars/xtenlab/obsidian-writing-buddy?style=for-the-badge&logo=github&label=Star%20on%20GitHub" alt="Star Writing Buddy on GitHub"></a>
 &nbsp;&nbsp;
 <a href="https://ko-fi.com/onezeroooo"><img src="https://ko-fi.com/img/githubbutton_sm.svg" height="28" alt="Support onezeroooo on Ko-fi"></a>
 </p>
 
-<p align="center"><sub>Writing Buddy is free and open source. <a href="https://community.obsidian.md/plugins/writing-buddy">View it on Obsidian Community</a>. If it helps your writing, <a href="https://github.com/onezeroooo/obsidian-writing-buddy/stargazers">give it a star on GitHub</a> or <a href="https://ko-fi.com/onezeroooo">support its upkeep on Ko-fi</a>. Both are entirely optional.</sub></p>
+<p align="center"><sub>Writing Buddy is free and open source. <a href="https://community.obsidian.md/plugins/writing-buddy">View it on Obsidian Community</a>. If it helps your writing, <a href="https://github.com/xtenlab/obsidian-writing-buddy/stargazers">give it a star on GitHub</a> or <a href="https://ko-fi.com/onezeroooo">support its upkeep on Ko-fi</a>. Both are entirely optional.</sub></p>
 
 ## Built for long-form writing
 
@@ -42,8 +42,6 @@ Bring your own model. Every generated edit stays a candidate until you choose **
 ## Context that matches the task
 
 Writing Buddy separates manuscript context from the model's own reasoning effort.
-
-Manuscript knowledge (novel memory) keeps a work's knowledge — events, state, relationships, what each character knows, and your own canon — current as you write, and hands a generation only what holds at the point in the story you are writing. The engine ([Recanta](https://github.com/onezeroooo/recanta-dev), on SQLite compiled to WebAssembly) is bundled into the plugin and runs on desktop and mobile; its portable knowledge files travel with the Vault, so a second device never reads a chapter twice. See [Novel memory](docs/NOVEL_MEMORY.md).
 
 | Context | What the AI can work with |
 |---|---|
@@ -108,14 +106,14 @@ The interface can follow Obsidian, or use English or Chinese explicitly. The ins
 - **Your project data stays in the Vault.** Conversations, project instructions, and Skills are ordinary files under `WritingBuddy/`. That folder is yours to place: drag or rename it anywhere in the file tree and Writing Buddy follows; Settings → Data folder shows where it is and can move it. The structure inside it is fixed.
 - **Credentials stay on this device.** API keys and connection credentials are not written into synced Vault files.
 - **No telemetry or analytics.**
-- **What leaves the Vault:** when you send a turn, Writing Buddy sends the selected text, applicable instructions, relevant conversation history, and the context assembled for that request to the selected connection. Building or updating manuscript knowledge sends each changed chapter or canon note once to your default connection. Connection checks and model discovery can also contact configured endpoints; they do not send your manuscript.
+- **What leaves the Vault:** when you send a turn, Writing Buddy sends the selected text, applicable instructions, relevant conversation history, and the context assembled for that request to the selected connection. Connection checks and model discovery can also contact configured endpoints; they do not send your manuscript.
 - **Security reports:** see [SECURITY.md](SECURITY.md) for the private reporting path.
 
 The provider or endpoint you choose has its own privacy and data policies.
 
 ## Quick Start
 
-Writing Buddy is published in the [Obsidian Community directory](https://community.obsidian.md/plugins/writing-buddy). If it has not appeared in in-app search yet, the directory index may still be propagating. The [GitHub release](https://github.com/onezeroooo/obsidian-writing-buddy/releases/tag/0.1.2) contains the same plugin files and release notes.
+Writing Buddy is published in the [Obsidian Community directory](https://community.obsidian.md/plugins/writing-buddy). If it has not appeared in in-app search yet, the directory index may still be propagating. The [GitHub release](https://github.com/xtenlab/obsidian-writing-buddy/releases/tag/0.1.2) contains the same plugin files and release notes.
 
 1. Open **Settings → Community plugins → Browse** in Obsidian.
 2. Search for **Writing Buddy** and install it.
@@ -139,7 +137,7 @@ On mobile, the selected provider or endpoint must be reachable from the device. 
 
 ## Source and development
 
-Writing Buddy is open source under the MIT license, except for the bundled memory kernel under `vendor/recanta/` (see [License](#license)). This public repository contains the product source for each released version, the files needed to build it, user documentation, and the distributed plugin artifacts.
+Writing Buddy is open source under the MIT license. This public repository contains the product source for each released version, the files needed to build it, user documentation, and the distributed plugin artifacts.
 
 To build from source, use Node.js 20.19 or later and run:
 
@@ -149,10 +147,8 @@ npm run build
 npm run smoke
 ```
 
-Found a problem or have a suggestion? [Open an issue](https://github.com/onezeroooo/obsidian-writing-buddy/issues) with the plugin version and steps to reproduce. Please leave API keys and private manuscript text out of public reports.
+Found a problem or have a suggestion? [Open an issue](https://github.com/xtenlab/obsidian-writing-buddy/issues) with the plugin version and steps to reproduce. Please leave API keys and private manuscript text out of public reports.
 
 ## License
 
-MIT, with one exception. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-The files under `vendor/recanta/` are the built memory kernel the plugin bundles. They are the author’s own work, all rights reserved, and are **not** MIT: they may be read, built and redistributed verbatim as part of an unmodified Writing Buddy, and nothing else. Their terms are in [vendor/recanta/LICENSE](vendor/recanta/LICENSE).
+MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

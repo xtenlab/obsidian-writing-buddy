@@ -563,7 +563,6 @@ function sourceKindName(source: ContextCitation): string {
 	switch (evidenceKindFromLabel(source.label)) {
 		case "selection": return t("activity.kindSelection");
 		case "context": return t("activity.kindContext");
-		case "memory": return t("activity.kindMemory");
 		case "character": return t("activity.kindCharacter");
 		case "world": return t("activity.kindWorld");
 		case "outline": return t("activity.kindOutline");

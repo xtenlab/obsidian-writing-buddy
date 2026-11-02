@@ -13,6 +13,7 @@ import { fetchHttpClient, type HttpClient, type HttpRequest, type HttpResponse }
 import { unsafeVaultPathMessage } from "./safePath";
 import { redactCredential } from "../auth/redact";
 import { t } from "../i18n";
+import { MAX_REPLY_CHARS } from "./streaming";
 import { fullEffortLadder } from "./effort";
 import { asError } from "../util/errors";
 
@@ -249,6 +250,10 @@ export class LlamaCppBackend implements AIBackend {
 			const response = await settleWithTimeout(transport, controller, LOCAL_OPENAI_REQUEST_TIMEOUT_MS);
 			if (this.cancelled.delete(payload.requestId) || controller.signal.aborted) return;
 			if (!response.ok) throw new Error(httpFailure(response, this.apiKey));
+			if (response.text.length > MAX_REPLY_CHARS) {
+				yield { type: "error", code: "reply_too_large", message: t("backend.replyTooLarge") };
+				return;
+			}
 
 			const completion = parseCompletion(response.json);
 			if (completion.finishReason === "length") {
@@ -432,7 +437,7 @@ function isAbortError(error: unknown): boolean { return error instanceof Error &
 function object(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null ? value as Record<string, unknown> : {}; }
 function string(value: unknown): string | undefined { return typeof value === "string" ? value : undefined; }
 function finiteNumber(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
-function httpFailure(response: HttpResponse, credential?: string): string { return "Local OpenAI-compatible HTTP " + response.status + (response.text ? "：" + redactCredential(response.text.slice(0, 200), credential) : ""); }
+function httpFailure(response: HttpResponse, credential?: string): string { return "Local OpenAI-compatible HTTP " + response.status + (response.text ? "：" + redactCredential(response.text, credential).slice(0, 200) : ""); }
 function describe(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function localErrorMessage(error: unknown, credential?: string): string {
 	const detail = redactCredential(describe(error), credential);

@@ -1,7 +1,7 @@
 # Signs a provenance attestation for the three files every GitHub Release ships, so anyone can
 # check that the main.js, manifest.json and styles.css they downloaded are the ones published here:
 #
-#   gh attestation verify main.js --repo onezeroooo/obsidian-writing-buddy
+#   gh attestation verify main.js --repo xtenlab/obsidian-writing-buddy
 #
 # Releases are published from this repository only; nothing here builds or changes the files.
 name: attest-release

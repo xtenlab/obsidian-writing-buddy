@@ -100,7 +100,15 @@ export async function* sseData(body: ReadableStream<Uint8Array>): AsyncGenerator
 	const decoder = new TextDecoder();
 	let buffer = "";
 	let data: string[] = [];
-	const flush = () => { const out = data.length ? data.join("\n") : null; data = []; return out; };
+	let dataChars = 0;
+	const flush = () => { const out = data.length ? data.join("\n") : null; data = []; dataChars = 0; return out; };
+	// An event's data lines are joined into one payload, so the event is bounded
+	// as a whole: a server that never sends the blank line cannot grow it forever.
+	const push = (line: string) => {
+		dataChars += line.length + 1;
+		if (dataChars > MAX_SSE_LINE_CHARS) throw new ReplyTooLargeError();
+		data.push(line);
+	};
 	try {
 		for (;;) {
 			let value: Uint8Array | undefined;
@@ -118,11 +126,11 @@ export async function* sseData(body: ReadableStream<Uint8Array>): AsyncGenerator
 				const line = buffer.slice(0, newline).replace(/\r$/, "");
 				buffer = buffer.slice(newline + 1);
 				if (line === "") { const out = flush(); if (out !== null) yield out; }
-				else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+				else if (line.startsWith("data:")) push(line.slice(5).replace(/^ /, ""));
 			}
 			if (done) break;
 		}
-		if (buffer.startsWith("data:")) data.push(buffer.slice(5).replace(/^ /, ""));
+		if (buffer.startsWith("data:")) push(buffer.slice(5).replace(/^ /, ""));
 		const out = flush();
 		if (out !== null) yield out;
 	} finally {

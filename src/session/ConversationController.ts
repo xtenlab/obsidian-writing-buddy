@@ -366,7 +366,7 @@ export class ConversationController {
 		if (replacement !== undefined) {
 			const split = splitRewriteReply(replacement);
 			const passage = nonBlank(split.replacement) ?? replacement;
-			return { ok: true, replacement: passage, prose: split.prose, metadata: outcome.metadata, facts: outcome.facts };
+			return { ok: true, replacement: passage, prose: split.prose, metadata: unverifiedWhenRaw(replacement, outcome.metadata), facts: outcome.facts };
 		}
 
 		// A non-empty chat-shaped structured result is still stronger than deltas.
@@ -381,11 +381,12 @@ export class ConversationController {
 		const parsed = parseRewriteText(raw);
 		if (parsed.ok && parsed.replacement.trim().length > 0) {
 			const split = splitRewriteReply(raw);
+			const metadata = unverifiedWhenRaw(raw, outcome.metadata);
 			return {
 				ok: true,
 				replacement: nonBlank(split.replacement) ?? parsed.replacement,
 				prose: split.prose,
-				metadata: outcome.metadata,
+				metadata,
 				facts: outcome.facts,
 			};
 		}
@@ -650,4 +651,14 @@ export function persistableUsage(usage: UsageInfo): GenerationMetadata["usage"] 
 	if (usage.outputTokens !== undefined) kept.outputTokens = usage.outputTokens;
 	if (usage.totalTokens !== undefined) kept.totalTokens = usage.totalTokens;
 	return kept;
+}
+
+/**
+ * No fence and no JSON: the whole reply became the candidate, and it may be
+ * the model's commentary ("好的，以下是……", "无需修改") rather than a passage.
+ * Marked so the card opens on the diff and Apply asks first.
+ */
+function unverifiedWhenRaw(reply: string, metadata: GenerationMetadata): GenerationMetadata {
+	const parsed = parseRewriteText(reply);
+	return parsed.ok && parsed.source === "raw" ? { ...metadata, rewriteParse: "fallback" } : metadata;
 }

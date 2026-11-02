@@ -220,15 +220,21 @@ export function allFences(text: string): Fence[] {
 	// not match the opening one exactly. Models get this wrong often enough that
 	// insisting on the canonical form leaves a perfectly good passage rendered as
 	// a literal ``改写后 in the middle of an answer — which is what happened.
-	const pattern = /(?:`{2,}|~{2,})([^\n]*)\r?\n([\s\S]*?)(?:`{2,}|~{2,})/g;
+	// Both fences stand on a line of their own, as Markdown has them: `~~` and
+	// paired backticks are ordinary in Chinese web fiction, and a closing fence
+	// read in the middle of a line cut the candidate there and lost the rest of
+	// the selection on Apply.
+	// The newline before an opening fence is matched rather than looked behind
+	// for: lookbehind does not compile on iOS before 16.4.
+	const pattern = /(^|\n)[ \t]*(?:`{2,}|~{2,})([^\n]*)\r?\n([\s\S]*?)\r?\n[ \t]*(?:`{2,}|~{2,})[ \t]*(?=\r?\n|$)/g;
 	const fences: Fence[] = [];
 	let match: RegExpExecArray | null;
 	while ((match = pattern.exec(text)) !== null) {
+		const start = match.index + match[1].length;
 		fences.push({
-			label: match[1] ?? "",
-			// Drop only the newline the closing fence itself contributed.
-			body: match[2].replace(/\r?\n$/, ""),
-			start: match.index,
+			label: match[2] ?? "",
+			body: match[3],
+			start,
 			end: match.index + match[0].length,
 		});
 	}

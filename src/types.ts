@@ -306,7 +306,7 @@ export interface CorpusPhaseTimings {
 export interface ContextSourceSnapshot {
 	path: string;
 	label: string;
-	type: "selection" | "surroundings" | "current" | "memory" | "linked" | "retrieved";
+	type: "selection" | "surroundings" | "current" | "linked" | "retrieved";
 	heading?: string;
 	/** Text fallback used for legacy/range-less navigation after reload. */
 	anchorText?: string;

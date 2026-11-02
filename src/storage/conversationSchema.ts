@@ -591,7 +591,7 @@ function parseContextSources(raw: unknown): NonNullable<ContextBuildReport["sour
 
 function isContextSourceType(value: unknown): value is NonNullable<ContextBuildReport["sources"]>[number]["type"] {
 	return value === "selection" || value === "surroundings" || value === "current" ||
-		value === "memory" || value === "linked" || value === "retrieved";
+		value === "linked" || value === "retrieved";
 }
 
 function isContextDepth(value: string | undefined): value is ContextBuildReport["mode"] {

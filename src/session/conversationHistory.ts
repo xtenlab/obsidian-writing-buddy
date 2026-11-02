@@ -70,7 +70,23 @@ export interface ConversationHistoryInput {
 	 */
 	supersededSelection?: SupersededSelectionCheck;
 	budget?: ConversationHistoryOptions;
+	/**
+	 * `selection`: a rewrite or continuation of `activeSelection`. Only turns
+	 * about the same passage travel — earlier versions of it and what the writer
+	 * said about them — within `SELECTION_HISTORY_BUDGET`. A month-old
+	 * discussion of something else outweighed a two-character "改写" and the
+	 * model rewrote that discussion instead of the selection (2026-11-01).
+	 */
+	scope?: "conversation" | "selection";
 }
+
+/** History for a turn that rewrites or continues the selection. */
+export const SELECTION_HISTORY_BUDGET: Readonly<Required<ConversationHistoryOptions>> = Object.freeze({
+	targetPairs: 4,
+	recentPairs: 4,
+	maxCharacters: 9_000,
+	maxEstimatedTokens: 3_000,
+});
 
 export type SupersededSelectionCheck = (selection: SelectionAttachment) => boolean;
 
@@ -122,9 +138,11 @@ interface ResolvedBudget {
  * with a detached assistant answer.
  */
 export function selectConversationHistory(input: ConversationHistoryInput): ConversationHistorySelection {
-	const budget = resolveBudget(input.budget);
+	const scoped = input.scope === "selection" && input.activeSelection !== undefined;
+	const budget = resolveBudget(input.budget ?? (scoped ? SELECTION_HISTORY_BUDGET : undefined));
 	const prior = messagesBeforeCurrent(input.session.messages, input.currentMessageId);
-	const turns = completeTurns(prior);
+	const allTurns = completeTurns(prior);
+	const turns = scoped ? allTurns.filter((turn) => aboutSelection(turn, input.activeSelection!)) : allTurns;
 	const selected = selectTurns(turns, input.current, input.activeSelection, budget, input.supersededSelection);
 	const history = renderTurns(selected, input.activeSelection, input.supersededSelection);
 	const cost = requestMessagesCost(history);
@@ -422,4 +440,18 @@ function sameSelectionSnapshot(left: SelectionAttachment, right: SelectionAttach
 		left.from.ch === right.from.ch &&
 		left.to.line === right.to.line &&
 		left.to.ch === right.to.ch;
+}
+
+/** A turn whose selection is the same passage as `active`: the same file, and an overlapping range or text. */
+function aboutSelection(turn: CompleteTurn, active: SelectionAttachment): boolean {
+	return turn.messages.some((message) => {
+		const selection = message.selection;
+		if (!selection || selection.filePath !== active.filePath) return false;
+		if (selection.text && active.text && (selection.text.includes(active.text) || active.text.includes(selection.text))) return true;
+		return !(before(selection.to, active.from) || before(active.to, selection.from));
+	});
+}
+
+function before(left: { line: number; ch: number }, right: { line: number; ch: number }): boolean {
+	return left.line < right.line || (left.line === right.line && left.ch < right.ch);
 }

@@ -1,7 +1,7 @@
 {
 	"id": "writing-buddy",
 	"name": "Writing Buddy",
-	"version": "0.1.10",
+	"version": "0.2.0",
 	"minAppVersion": "1.8.7",
 	"description": "Long-form AI writing with manuscript context, reviewable edits, writing skills, and bring-your-own models.",
 	"author": "onezeroooo",

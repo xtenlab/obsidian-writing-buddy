@@ -270,6 +270,8 @@ interface ReportState {
 	readFailures: number;
 	excludedByMetadata: number;
 	forcedSynthesis: boolean;
+	/** The research clock ran out and the answer was synthesised from what was admitted by then. */
+	deadlineReached?: boolean;
 	planFallbackReason?: ResearchPlanFallbackReason;
 	fileLimitReached: boolean;
 	evidenceLimitReached: boolean;
@@ -396,206 +398,225 @@ export class ResearchController {
 			// no planner iterator or backend request needs to start in that case.
 			await Promise.resolve();
 			this.throwIfStopped(job, deadlineAt);
-			for (let round = 1; round <= budget.maxPlanningRounds; round += 1) {
-				this.throwIfStopped(job, deadlineAt);
-				// Leave synthesis its seat. A writer who has paid for four planning
-				// calls is owed an answer built from them, not a budget error.
-				if (requestIds.length >= MAX_RESEARCH_ACTION_CALLS) {
-					state.forcedSynthesis = true;
-					if (unconsumedSearch) markUnconsumedSearch(trace, options.onTrace);
-					break;
-				}
-				const remainingQueries = Math.max(0, budget.maxQueries - state.queriesExecuted);
-				// A search needs a later model turn to inspect its R# results. Do not
-				// advertise or accept one when this is the final action round.
-				const availableSearches = round < budget.maxPlanningRounds ? remainingQueries : 0;
-				const remainingObservationChars = Math.max(0, budget.maxObservationChars - state.observationChars);
-				const remainingObservationPrompts = budget.maxPlanningRounds - round + 1;
-				const observationPrompt = boundedObservationPrompt(
-					observations, Math.floor(remainingObservationChars / remainingObservationPrompts),
-				);
-				if (observations.length > 0 && !observationPrompt.text) {
-					state.observationLimitReached = true;
-					state.forcedSynthesis = true;
-					if (unconsumedSearch) markUnconsumedSearch(trace, options.onTrace);
-					if (completion === "gather" && unconsumedSearch) {
-						return failure(
-							t("session.researchLastSearchUnused"), { ...metadata }, requestIds,
-							reportFor(state, budget, "backend-error", retrieval.ledger.size, retrieval.ledger.charsUsed,
-								retrieval.ledger.deduplicatedCount - initialDedup, 0),
-						);
-					}
-					break;
-				}
-				state.observationChars += observationPrompt.chars;
-				state.observationLimitReached ||= observationPrompt.compacted;
-				state.planningRounds = round;
-				progress("planning");
-				// An answer-completion turn merges the decision into the call that was
-				// happening anyway: prose is the final answer, a framed action is an
-				// action. A gather turn has no answer to give, so it keeps the pure
-				// planner. This is what turned a greeting from five calls into one —
-				// the judgment was never the cost, the dedicated call for it was.
-				const promptOptions = {
-					round, maxRounds: budget.maxPlanningRounds, remainingQueries: availableSearches,
-					evidenceItems: retrieval.ledger.size, evidenceChars: retrieval.ledger.charsUsed,
-					allowCompleteCorpus,
-				};
-				const roundPrompt = completion === "gather"
-					? researchPlannerPrompt(promptOptions)
-					: researchDecisionPrompt({
-						...promptOptions,
-						allowedEvidenceIds: retrieval.ledger.evidence.map((item) => item.id.toUpperCase()),
-						researchPerformed,
-					});
-				const plannerMessages: RequestMessage[] = [
-					...baseMessages.map((message) => ({ ...message })),
-					...(observationPrompt.text ? [{ role: "user" as const, content: observationPrompt.text }] : []),
-					{ role: "user", content: roundPrompt },
-				];
-				// The merged decision call is, most of the time, the answer, and the
-				// writer should see it arrive the way any other answer arrives. Its
-				// text is shown as it streams until a framed action appears — then
-				// the reply was a plan, which stays private, and the shown text is
-				// withdrawn. The tail is held back while it could still be the start
-				// of the sentinel, so no fragment of the frame is ever shown.
-				let shownAnswer = false;
-				const onDecisionDelta = completion === "gather" ? undefined : (text: string): void => {
-					const visible = answerPrefixBeforeAction(text);
-					if (visible === null) {
-						if (shownAnswer) { shownAnswer = false; progress("planning"); }
-						return;
-					}
-					if (!visible) return;
-					shownAnswer = true;
-					progress("synthesizing", keepAllowedResearchCitations(visible, new Set(retrieval.ledger.evidence.map((item) => item.id.toUpperCase()))));
-				};
-				let planOutcome = await this.call(
-					job, deadlineAt, requestIds, options.session.id, preferences, plannerMessages,
-					retrieval.ledger.evidence, researchSkill, metadata, facts, onDecisionDelta,
-				);
-				if (shownAnswer && !(planOutcome.ok && completion !== "gather" && !containsResearchAction(planOutcome.text))) progress("planning");
-				unconsumedSearch = false;
-				state.backendCalls = requestIds.length;
-				if (planOutcome.ok && completion !== "gather" && !containsResearchAction(planOutcome.text)) {
-					// No framed action anywhere in the reply: under the decision
-					// prompt this is the model answering, not failing to plan.
-					recordTrace(callTrace(trace, "final", planOutcome));
-					return this.deliverAnswer(planOutcome.text, state, budget, retrieval, metadata, facts, requestIds, initialDedup, progress);
-				}
-				if (!planOutcome.ok) {
-					recordTrace(callTrace(trace, "synthesize", planOutcome));
-					return this.callFailure(job, planOutcome, state, budget, retrieval, metadata, requestIds, initialDedup);
-				}
-
-				const parseOptions = {
-					remainingQueries: availableSearches,
-					maxQueryChars: budget.maxQueryChars, seenQueries, allowCompleteCorpus,
-				};
-				let decision = parseResearchAction(planOutcome.text, parseOptions);
-
-				// One corrective retry. A round lost to a sentence of preamble or a
-				// query that read like a path is not a decision the model made, and
-				// forcing synthesis on it silently produces an unresearched answer.
-				// Budget-exhausted reasons are excluded: there synthesizing is right.
-				// The retry is a real call. Spending the reserved synthesis seat on it
-				// trades a partial answer for none at all, so it only happens while
-				// the loop still has one of its own.
-				if (
-					decision.forcedSynthesis &&
-					isRecoverablePlanFallback(decision.reason) &&
-					requestIds.length < MAX_RESEARCH_ACTION_CALLS
-				) {
-					const retryOutcome = await this.call(
-						job, deadlineAt, requestIds, options.session.id, preferences,
-						[...plannerMessages, { role: "user" as const, content: researchPlanRetryPrompt(decision.reason) }],
-						retrieval.ledger.evidence, researchSkill, metadata, facts,
-					);
-					state.backendCalls = requestIds.length;
-					if (!retryOutcome.ok) {
-						recordTrace(callTrace(trace, "synthesize", retryOutcome));
-						return this.callFailure(job, retryOutcome, state, budget, retrieval, metadata, requestIds, initialDedup);
-					}
-					// Under the decision prompt the correction can be answered with
-					// prose instead of a repaired action — and prose is an answer.
-					if (completion !== "gather" && !containsResearchAction(retryOutcome.text)) {
-						recordTrace(callTrace(trace, "final", retryOutcome));
-						return this.deliverAnswer(retryOutcome.text, state, budget, retrieval, metadata, facts, requestIds, initialDedup, progress);
-					}
-					const retried = parseResearchAction(retryOutcome.text, parseOptions);
-					// Keep the retry only when it actually recovered. A second failure
-					// reports the *first* reason, which is the one that describes the
-					// model's natural output rather than its response to a correction.
-					if (!retried.forcedSynthesis) {
-						planOutcome = retryOutcome;
-						decision = retried;
-					}
-				}
-
-				if (decision.action === "synthesize") {
-					if (decision.forcedSynthesis) {
+			try {
+				for (let round = 1; round <= budget.maxPlanningRounds; round += 1) {
+					this.throwIfStopped(job, deadlineAt);
+					// Leave synthesis its seat. A writer who has paid for four planning
+					// calls is owed an answer built from them, not a budget error.
+					if (requestIds.length >= MAX_RESEARCH_ACTION_CALLS) {
 						state.forcedSynthesis = true;
-						state.planFallbackReason = decision.reason;
+						if (unconsumedSearch) markUnconsumedSearch(trace, options.onTrace);
+						break;
 					}
-					recordTrace(callTrace(trace, "synthesize", planOutcome, {
-						...(decision.reason ? { fallback: decision.reason } : {}),
-					}));
-					break;
-				}
-				if (decision.action === "completeCorpus") {
-					recordTrace(callTrace(trace, "completeCorpus", planOutcome));
-					const evidence = retrieval.ledger.evidence;
-					return {
-						ok: true, outcome: "complete-corpus", metadata: { ...metadata }, facts: { ...facts },
-						report: reportFor(
-							state, budget, "completed", evidence.length, retrieval.ledger.charsUsed,
-							retrieval.ledger.deduplicatedCount - initialDedup, 0,
-						),
-						requestIds: [...requestIds],
-					};
-				}
-				if (!Number.isFinite(deadlineAt)) deadlineAt = this.now() + budget.deadlineMs;
-				progress("retrieving");
-				const retrievalOptions = { signal: job.abortController.signal, deadlineAt };
-				// One action can now admit several sources, so every branch produces a
-				// list. The per-handle budgets inside the retriever are unchanged: a
-				// batch stops early on its own when files, chars or evidence run out.
-				let found: Array<{ observation: ResearchToolObservation; report: ResearchRetrievalReport; handle?: string }>;
-				switch (decision.action) {
-						case "search":
-							state.queriesRequested += 1;
-							state.queriesExecuted += 1;
-							seenQueries.add(normalizeResearchQueryKey(decision.query));
-							found = [await this.retriever.search(decision.query, retrieval, retrievalOptions)];
-							break;
-						case "read": {
-							const reads: typeof found = [];
-							for (const handle of decision.handles) {
-								this.throwIfStopped(job, deadlineAt);
-								reads.push({ ...await this.retriever.read(handle, retrieval, retrievalOptions), handle });
-							}
-							found = reads;
-							break;
+					const remainingQueries = Math.max(0, budget.maxQueries - state.queriesExecuted);
+					// A search needs a later model turn to inspect its R# results. Do not
+					// advertise or accept one when this is the final action round.
+					const availableSearches = round < budget.maxPlanningRounds ? remainingQueries : 0;
+					const remainingObservationChars = Math.max(0, budget.maxObservationChars - state.observationChars);
+					const remainingObservationPrompts = budget.maxPlanningRounds - round + 1;
+					const observationPrompt = boundedObservationPrompt(
+						observations, Math.floor(remainingObservationChars / remainingObservationPrompts),
+					);
+					if (observations.length > 0 && !observationPrompt.text) {
+						state.observationLimitReached = true;
+						state.forcedSynthesis = true;
+						if (unconsumedSearch) markUnconsumedSearch(trace, options.onTrace);
+						if (completion === "gather" && unconsumedSearch) {
+							return failure(
+								t("session.researchLastSearchUnused"), { ...metadata }, requestIds,
+								reportFor(state, budget, "backend-error", retrieval.ledger.size, retrieval.ledger.charsUsed,
+									retrieval.ledger.deduplicatedCount - initialDedup, 0),
+							);
 						}
-						case "readAround":
-							found = [{
-								...await this.retriever.readAround(
-									decision.handle, retrieval, { before: decision.before, after: decision.after }, retrievalOptions,
-								),
-								handle: decision.handle,
-							}];
-							break;
-				}
-				rememberObservations(observations, found.map((one) => one.observation));
-				for (const one of found) {
-					researchPerformed ||= one.observation.ok;
-					recordTrace(retrievalTrace(trace, decision, one.observation, planOutcome, one.handle));
-					mergeRetrievalReport(state, one.report);
-				}
-				unconsumedSearch = decision.action === "search";
-				state.retrievalRounds += 1;
-			}
+						break;
+					}
+					state.observationChars += observationPrompt.chars;
+					state.observationLimitReached ||= observationPrompt.compacted;
+					state.planningRounds = round;
+					progress("planning");
+					// An answer-completion turn merges the decision into the call that was
+					// happening anyway: prose is the final answer, a framed action is an
+					// action. A gather turn has no answer to give, so it keeps the pure
+					// planner. This is what turned a greeting from five calls into one —
+					// the judgment was never the cost, the dedicated call for it was.
+					const promptOptions = {
+						round, maxRounds: budget.maxPlanningRounds, remainingQueries: availableSearches,
+						evidenceItems: retrieval.ledger.size, evidenceChars: retrieval.ledger.charsUsed,
+						allowCompleteCorpus,
+					};
+					const roundPrompt = completion === "gather"
+						? researchPlannerPrompt(promptOptions)
+						: researchDecisionPrompt({
+							...promptOptions,
+							allowedEvidenceIds: retrieval.ledger.evidence.map((item) => item.id.toUpperCase()),
+							researchPerformed,
+						});
+					const plannerMessages: RequestMessage[] = [
+						...baseMessages.map((message) => ({ ...message })),
+						...(observationPrompt.text ? [{ role: "user" as const, content: observationPrompt.text }] : []),
+						{ role: "user", content: roundPrompt },
+					];
+					// The merged decision call is, most of the time, the answer, and the
+					// writer should see it arrive the way any other answer arrives. Its
+					// text is shown as it streams until a framed action appears — then
+					// the reply was a plan, which stays private, and the shown text is
+					// withdrawn. The tail is held back while it could still be the start
+					// of the sentinel, so no fragment of the frame is ever shown.
+					let shownAnswer = false;
+					const onDecisionDelta = completion === "gather" ? undefined : (text: string): void => {
+						const visible = answerPrefixBeforeAction(text);
+						if (visible === null) {
+							if (shownAnswer) { shownAnswer = false; progress("planning"); }
+							return;
+						}
+						if (!visible) return;
+						shownAnswer = true;
+						progress("synthesizing", keepAllowedResearchCitations(visible, new Set(retrieval.ledger.evidence.map((item) => item.id.toUpperCase()))));
+					};
+					let planOutcome = await this.call(
+						job, deadlineAt, requestIds, options.session.id, preferences, plannerMessages,
+						retrieval.ledger.evidence, researchSkill, metadata, facts, onDecisionDelta,
+					);
+					if (shownAnswer && !(planOutcome.ok && completion !== "gather" && !containsResearchAction(planOutcome.text))) progress("planning");
+					unconsumedSearch = false;
+					state.backendCalls = requestIds.length;
+					if (planOutcome.ok && completion !== "gather" && !containsResearchAction(planOutcome.text)) {
+						// No framed action anywhere in the reply: under the decision
+						// prompt this is the model answering, not failing to plan.
+						recordTrace(callTrace(trace, "final", planOutcome));
+						return this.deliverAnswer(planOutcome.text, state, budget, retrieval, metadata, facts, requestIds, initialDedup, progress);
+					}
+					if (!planOutcome.ok) {
+						recordTrace(callTrace(trace, "synthesize", planOutcome));
+						if (researchClockRanOut(job, planOutcome)) throw new ResearchDeadlineError();
+						return this.callFailure(job, planOutcome, state, budget, retrieval, metadata, requestIds, initialDedup);
+					}
 
+					const parseOptions = {
+						remainingQueries: availableSearches,
+						maxQueryChars: budget.maxQueryChars, seenQueries, allowCompleteCorpus,
+					};
+					let decision = parseResearchAction(planOutcome.text, parseOptions);
+
+					// One corrective retry. A round lost to a sentence of preamble or a
+					// query that read like a path is not a decision the model made, and
+					// forcing synthesis on it silently produces an unresearched answer.
+					// Budget-exhausted reasons are excluded: there synthesizing is right.
+					// The retry is a real call. Spending the reserved synthesis seat on it
+					// trades a partial answer for none at all, so it only happens while
+					// the loop still has one of its own.
+					if (
+						decision.forcedSynthesis &&
+						isRecoverablePlanFallback(decision.reason) &&
+						requestIds.length < MAX_RESEARCH_ACTION_CALLS
+					) {
+						const retryOutcome = await this.call(
+							job, deadlineAt, requestIds, options.session.id, preferences,
+							[...plannerMessages, { role: "user" as const, content: researchPlanRetryPrompt(decision.reason) }],
+							retrieval.ledger.evidence, researchSkill, metadata, facts,
+						);
+						state.backendCalls = requestIds.length;
+						if (!retryOutcome.ok) {
+							recordTrace(callTrace(trace, "synthesize", retryOutcome));
+							if (researchClockRanOut(job, retryOutcome)) throw new ResearchDeadlineError();
+							return this.callFailure(job, retryOutcome, state, budget, retrieval, metadata, requestIds, initialDedup);
+						}
+						// Under the decision prompt the correction can be answered with
+						// prose instead of a repaired action — and prose is an answer.
+						if (completion !== "gather" && !containsResearchAction(retryOutcome.text)) {
+							recordTrace(callTrace(trace, "final", retryOutcome));
+							return this.deliverAnswer(retryOutcome.text, state, budget, retrieval, metadata, facts, requestIds, initialDedup, progress);
+						}
+						const retried = parseResearchAction(retryOutcome.text, parseOptions);
+						// Keep the retry only when it actually recovered. A second failure
+						// reports the *first* reason, which is the one that describes the
+						// model's natural output rather than its response to a correction.
+						if (!retried.forcedSynthesis) {
+							planOutcome = retryOutcome;
+							decision = retried;
+						}
+					}
+
+					if (decision.action === "synthesize") {
+						if (decision.forcedSynthesis) {
+							state.forcedSynthesis = true;
+							state.planFallbackReason = decision.reason;
+						}
+						recordTrace(callTrace(trace, "synthesize", planOutcome, {
+							...(decision.reason ? { fallback: decision.reason } : {}),
+						}));
+						break;
+					}
+					if (decision.action === "completeCorpus") {
+						recordTrace(callTrace(trace, "completeCorpus", planOutcome));
+						const evidence = retrieval.ledger.evidence;
+						return {
+							ok: true, outcome: "complete-corpus", metadata: { ...metadata }, facts: { ...facts },
+							report: reportFor(
+								state, budget, "completed", evidence.length, retrieval.ledger.charsUsed,
+								retrieval.ledger.deduplicatedCount - initialDedup, 0,
+							),
+							requestIds: [...requestIds],
+						};
+					}
+					if (!Number.isFinite(deadlineAt)) deadlineAt = this.now() + budget.deadlineMs;
+					progress("retrieving");
+					const retrievalOptions = { signal: job.abortController.signal, deadlineAt };
+					// One action can now admit several sources, so every branch produces a
+					// list. The per-handle budgets inside the retriever are unchanged: a
+					// batch stops early on its own when files, chars or evidence run out.
+					let found: Array<{ observation: ResearchToolObservation; report: ResearchRetrievalReport; handle?: string }>;
+					switch (decision.action) {
+							case "search":
+								state.queriesRequested += 1;
+								state.queriesExecuted += 1;
+								seenQueries.add(normalizeResearchQueryKey(decision.query));
+								found = [await this.retriever.search(decision.query, retrieval, retrievalOptions)];
+								break;
+							case "read": {
+								const reads: typeof found = [];
+								for (const handle of decision.handles) {
+									this.throwIfStopped(job, deadlineAt);
+									reads.push({ ...await this.retriever.read(handle, retrieval, retrievalOptions), handle });
+								}
+								found = reads;
+								break;
+							}
+							case "readAround":
+								found = [{
+									...await this.retriever.readAround(
+										decision.handle, retrieval, { before: decision.before, after: decision.after }, retrievalOptions,
+									),
+									handle: decision.handle,
+								}];
+								break;
+					}
+					rememberObservations(observations, found.map((one) => one.observation));
+					for (const one of found) {
+						researchPerformed ||= one.observation.ok;
+						recordTrace(retrievalTrace(trace, decision, one.observation, planOutcome, one.handle));
+						mergeRetrievalReport(state, one.report);
+					}
+					unconsumedSearch = decision.action === "search";
+					state.retrievalRounds += 1;
+				}
+
+			} catch (error) {
+				// The research clock limits research, not the answer (D-038): when it
+				// runs out, what was admitted so far is synthesised (or handed to the
+				// rewrite), as long as a call is left to do it. Before this, a slow
+				// local model that crossed the clock mid-plan lost every piece of
+				// evidence it had gathered and the writer got no answer at all.
+				const clock = !job.cancelled && (job.deadlineExceeded || error instanceof ResearchRetrievalDeadlineError || error instanceof ResearchDeadlineError);
+				if (!clock || (completion !== "gather" && requestIds.length >= MAX_RESEARCH_BACKEND_CALLS)) throw error;
+				job.deadlineExceeded = false;
+				job.requestId = null;
+				job.abortController = new AbortController();
+				deadlineAt = Number.POSITIVE_INFINITY;
+				state.forcedSynthesis = true;
+				state.deadlineReached = true;
+				if (unconsumedSearch) markUnconsumedSearch(trace, options.onTrace);
+			}
 			this.throwIfStopped(job, deadlineAt);
 			if (completion === "gather") {
 				const evidence = retrieval.ledger.evidence;
@@ -1021,7 +1042,7 @@ function reportFor(
 		limitsReached: {
 			planning: state.planningRounds >= budget.maxPlanningRounds, observations: state.observationLimitReached,
 			queries: state.queriesExecuted >= budget.maxQueries, files: state.fileLimitReached,
-			evidence: state.evidenceLimitReached, chars: state.charLimitReached, deadline: status === "deadline",
+			evidence: state.evidenceLimitReached, chars: state.charLimitReached, deadline: status === "deadline" || state.deadlineReached === true,
 		},
 	};
 }
@@ -1392,4 +1413,9 @@ export function answerPrefixBeforeAction(text: string): string | null {
 	if (open === -1) return text;
 	const tail = text.slice(open);
 	return RESEARCH_PLAN_SENTINEL.startsWith(tail) ? text.slice(0, open) : text;
+}
+
+/** A call that failed because the research clock cut it, not because the model or the connection did. */
+function researchClockRanOut(job: ActiveResearchJob, outcome: CallOutcome): boolean {
+	return !job.cancelled && !outcome.cancelled && (job.deadlineExceeded || outcome.deadlineExceeded === true);
 }

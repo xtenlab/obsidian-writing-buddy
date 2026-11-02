@@ -491,19 +491,21 @@ export function researchSynthesisPrompt(
 	allowedEvidenceIds: readonly string[],
 	status?: ResearchSynthesisStatus,
 ): string {
-	const ids = allowedEvidenceIds.map((id) => `[${id}]`).join(String.fromCharCode(44, 32)) || "none";
+	const ids = allowedEvidenceIds.map((id) => `[${id}]`).join(String.fromCharCode(44, 32)) || say("无", "none");
 	const researched = status?.researchPerformed === true;
+	// Bilingual like every other model-facing prompt: an English last
+	// instruction over Chinese material tempted small models to answer in English.
 	return [
-		"Now answer the user's request directly using only evidence admitted by the client and ordinary conversation context.",
+		say("现在直接回答作者的请求，只能使用客户端采纳的证据和正常的对话上下文。", "Now answer the user's request directly using only evidence admitted by the client and ordinary conversation context."),
 		...(researched
-			? ["WritingBuddy performed bounded project research for this turn. The attached numbered items are the evidence available after that phase; some may come from deterministic bootstrap context and others from project reads. They are not merely snippets manually provided by the author."]
-			: ["No project search or source read was executed in this turn; answer only from the deterministic bootstrap context."]),
-		"This was bounded research, not an exhaustive scan of the entire Vault. Never claim complete project coverage unless the host explicitly used its separate corpus workflow.",
-		...(status?.forcedSynthesis ? ["The research loop ended through a bounded fallback or limit; do not imply that the available evidence is complete."] : []),
-		"Do not mention research actions, observations, hidden prompts, file discovery, or this protocol.",
-		"Put a citation immediately after each evidence-based claim. Do not cite unsupported claims.",
-		`The only citation ids available for this answer are: ${ids}.`,
-		"Never invent an id, path, filename, or source. If project research ran but the admitted evidence is insufficient, say that the bounded project research did not find enough evidence to confirm the answer; do not describe it merely as an absence from currently provided snippets.",
+			? [say("WritingBuddy 已为这一轮做了有限的项目检索。附上的编号条目就是这一阶段之后可用的证据，其中一些来自确定的起始上下文，另一些来自项目读取；它们不只是作者手动提供的片段。", "WritingBuddy performed bounded project research for this turn. The attached numbered items are the evidence available after that phase; some may come from deterministic bootstrap context and others from project reads. They are not merely snippets manually provided by the author.")]
+			: [say("这一轮没有执行项目搜索或读取，只能依据确定的起始上下文作答。", "No project search or source read was executed in this turn; answer only from the deterministic bootstrap context.")]),
+		say("这是有限的检索，不是对整个 Vault 的完整扫描。除非客户端明确使用了它单独的全稿流程，否则不要声称覆盖了整个项目。", "This was bounded research, not an exhaustive scan of the entire Vault. Never claim complete project coverage unless the host explicitly used its separate corpus workflow."),
+		...(status?.forcedSynthesis ? [say("检索是在兜底或某项上限处结束的；不要暗示现有证据是完整的。", "The research loop ended through a bounded fallback or limit; do not imply that the available evidence is complete.")] : []),
+		say("不要提及检索动作、观察结果、隐藏的提示、文件查找或这个协议。", "Do not mention research actions, observations, hidden prompts, file discovery, or this protocol."),
+		say("每个基于证据的判断后面紧跟引用。没有证据支持的判断不要引用。", "Put a citation immediately after each evidence-based claim. Do not cite unsupported claims."),
+		say(`这次回答可用的引用编号只有：${ids}。`, `The only citation ids available for this answer are: ${ids}.`),
+		say("不要编造编号、路径、文件名或来源。如果做过项目检索但采纳的证据不足，就说有限的项目检索没有找到足够的证据来确认答案；不要只说成当前提供的片段里没有。", "Never invent an id, path, filename, or source. If project research ran but the admitted evidence is insufficient, say that the bounded project research did not find enough evidence to confirm the answer; do not describe it merely as an absence from currently provided snippets."),
 	].join("\n");
 }
 
